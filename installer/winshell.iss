@@ -37,8 +37,8 @@ SetupLogging=yes
 
 [Languages]
 Name: "en"; MessagesFile: "compiler:Default.isl"
-Name: "zh-CN"; MessagesFile: "languages\ChineseSimplified.isl"
-Name: "zh-TW"; MessagesFile: "languages\ChineseTraditional.isl"
+Name: "zh_CN"; MessagesFile: "languages\ChineseSimplified.isl"
+Name: "zh_TW"; MessagesFile: "languages\ChineseTraditional.isl"
 Name: "ja"; MessagesFile: "compiler:Languages\Japanese.isl"
 Name: "ko"; MessagesFile: "compiler:Languages\Korean.isl"
 Name: "de"; MessagesFile: "compiler:Languages\German.isl"
