@@ -141,7 +141,18 @@ impl TerminalView {
     }
 
     fn load_history(&mut self) {
-        let home = std::env::var_os("HOME")
+        self.history = Suggestions::default();
+        if let Some(path) = self.session.profile.env.get("HISTFILE") {
+            self.history.load_history(std::path::Path::new(path));
+            return;
+        }
+        let home = self
+            .session
+            .profile
+            .env
+            .get("HOME")
+            .map(std::ffi::OsString::from)
+            .or_else(|| std::env::var_os("HOME"))
             .map(std::path::PathBuf::from)
             .or_else(|| directories::UserDirs::new().map(|d| d.home_dir().to_path_buf()));
         if let Some(home) = home {

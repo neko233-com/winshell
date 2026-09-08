@@ -1,0 +1,38 @@
+name: Validate one-command installation
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: Published release version
+        required: true
+        default: '0.2.0'
+permissions:
+  contents: read
+jobs:
+  install:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, macos-15, macos-15-intel]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 15
+    env:
+      WINSHELL_VERSION: ${{ inputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install and upgrade on Windows
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          .\install.ps1 -Version $env:WINSHELL_VERSION
+          .\install.ps1 -Version $env:WINSHELL_VERSION
+          .\scripts\validate.ps1 -Executable "$env:LOCALAPPDATA\Programs\WinShell\winshell.exe" -UI
+      - name: Install and upgrade on macOS
+        if: runner.os == 'macOS'
+        run: |
+          sh install.sh "$WINSHELL_VERSION"
+          sh install.sh "$WINSHELL_VERSION"
+          "$HOME/.local/bin/winshell" --doctor
+          "$HOME/.local/bin/winshell" --smoke-test bash
+          "$HOME/.local/bin/winshell" --ui-smoke-test "$RUNNER_TEMP/winshell-installed-ui.txt"
+          cat "$RUNNER_TEMP/winshell-installed-ui.txt"
