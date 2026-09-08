@@ -194,7 +194,38 @@ fn start_ui_smoke(window: AnyWindowHandle, report: std::path::PathBuf, cx: &mut 
                         anyhow::ensure!(active.as_ref().unwrap().read(cx).language == Language::Chinese, "Terminal UI language did not update");
                         key("escape", window, cx)?; step += 1;
                     }
-                    19 => return Ok(true),
+                    19 if ready => {
+                        text("printf 'IME_%s\\n' '", window, cx);
+                        active.as_ref().unwrap().update(cx, |terminal, cx| {
+                            terminal.replace_and_mark_text_in_range(None, "输入🙂", None, window, cx);
+                        });
+                        step += 1;
+                    }
+                    20 => {
+                        active.as_ref().unwrap().update(cx, |terminal, cx| -> anyhow::Result<()> {
+                            anyhow::ensure!(terminal.marked_text_range(window, cx) == Some(0..4), "IME marked range must use UTF-16 units");
+                            anyhow::ensure!(!terminal.session.state.lock().unwrap().input_query().unwrap_or_default().contains("输入"), "IME preedit leaked into shell input");
+                            terminal.replace_text_in_range(None, "输入🙂", window, cx);
+                            Ok(())
+                        })?;
+                        text("'", window, cx); key("enter", window, cx)?; step += 1;
+                    }
+                    21 if ready && active.as_ref().is_some_and(|view| view.read(cx).session.state.lock().unwrap().text().contains("IME_输入🙂")) => {
+                        text("vim -Nu NONE -n --noplugin -i NONE ui-buffer.txt", window, cx);
+                        key("enter", window, cx)?; step += 1;
+                    }
+                    22 if active.as_ref().is_some_and(|view| view.read(cx).session.state.lock().unwrap().term.mode().contains(alacritty_terminal::term::TermMode::ALT_SCREEN)) => {
+                        text("iWinShell 编辑验证", window, cx);
+                        key("escape", window, cx)?;
+                        text(":wq", window, cx); key("enter", window, cx)?; step += 1;
+                    }
+                    23 if ready => {
+                        let cwd = root.read(cx).config.cwd();
+                        anyhow::ensure!(std::fs::read_to_string(cwd.join("ui-buffer.txt"))?.trim() == "WinShell 编辑验证", "Full-screen editor did not save UTF-8 input");
+                        text("sleep 30", window, cx); key("enter", window, cx)?; step += 1;
+                    }
+                    24 if !ready => { key("ctrl-c", window, cx)?; step += 1; }
+                    25 if ready => return Ok(true),
                     _ => {},
                 }
                 anyhow::ensure!(std::time::Instant::now() < deadline, "UI acceptance test timed out at stage {step}");
@@ -202,7 +233,7 @@ fn start_ui_smoke(window: AnyWindowHandle, report: std::path::PathBuf, cx: &mut 
             }).and_then(|result| result);
             let result = match outcome {
                 Ok(false) => continue,
-                Ok(true) => "PASS native GPUI window: keyboard input, suggestions, acceptance, Bash execution, search, copy, tabs, focus, sidebar, settings, zoom, close/reopen, Chinese/Japanese/Korean/Latin text, language switching, theme palette, persisted settings".to_owned(),
+                Ok(true) => "PASS native GPUI window: keyboard input, suggestions, acceptance, Bash execution, search, copy, tabs, focus, sidebar, settings, zoom, close/reopen, Chinese/Japanese/Korean/Latin text, language switching, theme palette, persisted settings, IME composition/commit/UTF-16 ranges, Vim alternate screen and UTF-8 file editing, Ctrl+C interrupts".to_owned(),
                 Err(error) => format!("FAIL stage {step}: {error:#}"),
             };
             let _ = std::fs::write(&report, result);

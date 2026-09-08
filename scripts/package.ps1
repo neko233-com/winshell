@@ -16,11 +16,15 @@ try {
     $destination = Join-Path $projectRoot "dist\$name"
     if (Test-Path -LiteralPath $destination) { throw "Package already exists: $destination. Preserve it or choose a fresh checkout." }
     New-Item -ItemType Directory -Path $destination -Force | Out-Null
+    python (Join-Path $PSScriptRoot 'collect-rust-licenses.py') $destination
+    if ($LASTEXITCODE -ne 0) { throw 'Dependency notice collection failed' }
     Copy-Item -LiteralPath (Join-Path $projectRoot 'target\release\winshell.exe') -Destination $destination
-    foreach ($file in @('README.md', 'LICENSE', 'THIRD_PARTY_NOTICES.md', 'config.example.toml')) {
+    foreach ($file in @('README.md', 'README.zh-CN.md', 'LICENSE', 'THIRD_PARTY_NOTICES.md', 'config.example.toml')) {
         Copy-Item -LiteralPath (Join-Path $projectRoot $file) -Destination $destination
     }
     if (-not $WithoutRuntime) {
+        Copy-Item -LiteralPath (Join-Path $projectRoot 'docs\runtime-sources.json') -Destination $destination
+        Copy-Item -LiteralPath (Join-Path $projectRoot 'docs\runtime-package-versions.txt') -Destination $destination
         New-Item -ItemType Directory -Path (Join-Path $destination 'runtime') | Out-Null
         Copy-Item -LiteralPath (Join-Path $projectRoot 'runtime\git') -Destination (Join-Path $destination 'runtime\git') -Recurse
     }
@@ -31,4 +35,3 @@ try {
     Set-Content -LiteralPath "$zip.sha256" -Value "$hash  $name.zip" -Encoding ascii
     Write-Output "Created $zip"
 } finally { Pop-Location }
-

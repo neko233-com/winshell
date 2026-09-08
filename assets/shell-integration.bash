@@ -45,5 +45,5 @@ else
     PROMPT_COMMAND=(__winshell_prompt "${PROMPT_COMMAND:-:}")
 fi
 PS0=$'\e]133;C\a'
-PS1='\[\e[38;2;116;213;187m\]\w\[\e[0m\]\[\e[38;2;147;155;179m\]${__winshell_branch}\[\e[0m\]'
-PS1+='\n\[\e[38;2;116;213;187m\]❯\[\e[0m\] \[\e]133;B\a\]'
+PS1='\[\e[32m\]\w\[\e[0m\]\[\e[90m\]${__winshell_branch}\[\e[0m\]'
+PS1+='\n\[\e[32m\]❯\[\e[0m\] \[\e]133;B\a\]'

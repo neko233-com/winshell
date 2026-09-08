@@ -1,6 +1,7 @@
 """Reproduce the original WinShell vector-like app icon using stdlib only."""
 import math
 import struct
+import zlib
 from pathlib import Path
 
 
@@ -33,6 +34,18 @@ for n in (16, 24, 32, 48, 64, 128, 256):
     mask = bytes(((n+31)//32)*4*n)
     header = struct.pack('<IiiHHIIiiII', 40, n, n*2, 1, 32, 0, len(pixels), 0, 0, 0, 0)
     images.append((n, header+pixels+mask))
+    if n == 256:
+        def chunk(kind, data):
+            return struct.pack('>I', len(data)) + kind + data + struct.pack('>I', zlib.crc32(kind+data))
+        raw = bytearray()
+        for row in reversed(range(n)):
+            raw.append(0)
+            for column in range(n):
+                b,g,r,a = pixels[(row*n+column)*4:(row*n+column+1)*4]
+                raw.extend((r,g,b,a))
+        png = b'\x89PNG\r\n\x1a\n' + chunk(b'IHDR', struct.pack('>IIBBBBB', n,n,8,6,0,0,0))
+        png += chunk(b'IDAT', zlib.compress(raw)) + chunk(b'IEND', b'')
+        Path(__file__).resolve().parent.parent.joinpath('assets/winshell.png').write_bytes(png)
 result = bytearray(struct.pack('<HHH', 0, 1, len(images)))
 offset = 6+16*len(images)
 for n, data in images:

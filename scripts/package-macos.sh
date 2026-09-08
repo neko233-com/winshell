@@ -11,7 +11,15 @@ test ! -e "$package" || { echo "Package already exists: $package" >&2; exit 1; }
 app="$package/WinShell.app"
 mkdir -p "$app/Contents/MacOS" "$app/Contents/Resources"
 cp target/release/winshell "$app/Contents/MacOS/winshell"
-cp README.md LICENSE THIRD_PARTY_NOTICES.md config.example.toml "$app/Contents/Resources/"
+cp README.md README.zh-CN.md LICENSE THIRD_PARTY_NOTICES.md config.example.toml "$app/Contents/Resources/"
+python3 scripts/collect-rust-licenses.py "$app/Contents/Resources"
+iconset="$package/WinShell.iconset"
+mkdir "$iconset"
+for pixels in 16 32 128 256; do
+    sips -z "$pixels" "$pixels" assets/winshell.png --out "$iconset/icon_${pixels}x${pixels}.png" >/dev/null
+done
+iconutil -c icns "$iconset" -o "$app/Contents/Resources/WinShell.icns"
+rm -r "$iconset"
 cat > "$app/Contents/Info.plist" <<EOF
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -20,6 +28,7 @@ cat > "$app/Contents/Info.plist" <<EOF
 <key>CFBundleDisplayName</key><string>WinShell</string>
 <key>CFBundleIdentifier</key><string>com.neko233.winshell</string>
 <key>CFBundleExecutable</key><string>winshell</string>
+<key>CFBundleIconFile</key><string>WinShell.icns</string>
 <key>CFBundlePackageType</key><string>APPL</string>
 <key>CFBundleShortVersionString</key><string>$version</string>
 <key>CFBundleVersion</key><string>$version</string>

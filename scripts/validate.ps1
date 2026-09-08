@@ -4,14 +4,14 @@ $ErrorActionPreference = 'Stop'
 $Executable = (Resolve-Path -LiteralPath $Executable).Path
 $outputDir = Join-Path ([IO.Path]::GetTempPath()) ("winshell-validation-" + [Guid]::NewGuid().ToString('N'))
 New-Item -ItemType Directory -Path $outputDir | Out-Null
-foreach ($shellId in @('bash', 'powershell', 'cmd')) {
-    $out = Join-Path $outputDir "$shellId.stdout"
-    $err = Join-Path $outputDir "$shellId.stderr"
-    $process = Start-Process -FilePath $Executable -ArgumentList '--smoke-test', $shellId -PassThru -WindowStyle Hidden -RedirectStandardOutput $out -RedirectStandardError $err
-    if (-not $process.WaitForExit(90000)) { throw "Validation timed out: $shellId (PID $($process.Id))" }
+foreach ($validationShell in @('bash', 'powershell', 'cmd')) {
+    $out = Join-Path $outputDir "$validationShell.stdout"
+    $err = Join-Path $outputDir "$validationShell.stderr"
+    $process = Start-Process -FilePath $Executable -ArgumentList '--smoke-test', $validationShell -PassThru -WindowStyle Hidden -RedirectStandardOutput $out -RedirectStandardError $err
+    if (-not $process.WaitForExit(90000)) { throw "Validation timed out: $validationShell (PID $($process.Id))" }
     Get-Content -LiteralPath $out
-    if ($process.ExitCode -ne 0 -or (Get-Content -LiteralPath $out -Raw) -notmatch "PASS $shellId") {
-        throw "Validation failed for $shellId`: $(Get-Content -LiteralPath $err -Raw)"
+    if ($process.ExitCode -ne 0 -or (Get-Content -LiteralPath $out -Raw) -notmatch "PASS $validationShell") {
+        throw "Validation failed for $validationShell`: $(Get-Content -LiteralPath $err -Raw)"
     }
 }
 if ($UI) {

@@ -1,19 +1,56 @@
 # WinShell
 
-A modern, native, multi-tab Windows terminal built with **Rust + GPUI**.
+A modern, native, multi-tab terminal built with **Rust + GPUI**, for Windows
+and macOS. [中文说明](README.zh-CN.md)
 
 WinShell aims to replace the Git Bash terminal window while keeping real Bash,
 Git, and Unix utilities. The portable edition includes the official Git for
 Windows runtime, so Git Bash does not need to be installed separately.
 
-**Status: 0.1 preview.** This is a working terminal implementation, still under
-compatibility testing. It is not yet a claim of complete Git Bash/Windows
-Terminal feature parity.
+Version **0.2.0** adds system-language detection, eight UI languages, live theme
+switching, native UI acceptance tests, Windows setup, and macOS applications.
+See the compatibility limits below for the tested scope.
+
+## Install
+
+Windows PowerShell, current user, no administrator required:
+
+```powershell
+& ([scriptblock]::Create((irm https://raw.githubusercontent.com/neko233-com/winshell/main/install.ps1)))
+```
+
+macOS Terminal, Intel or Apple Silicon:
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/neko233-com/winshell/main/install.sh | sh
+```
+
+Both scripts fetch the latest GitHub release and check SHA256 before installing.
+Re-run to upgrade; settings are preserved. Windows installs to
+`%LOCALAPPDATA%\Programs\WinShell` with a Start menu entry and an uninstaller.
+macOS installs to `~/Applications/WinShell.app`, with a command in
+`~/.local/bin/winshell`. macOS uses system Bash/Zsh and Unix tools; Git is not
+bundled on macOS. Install Apple's command line tools or your preferred Git
+distribution if Git is unavailable.
+
+Alternatively download the setup EXE, portable ZIP, or macOS archive from
+[Releases](https://github.com/neko233-com/winshell/releases). Windows builds are
+unsigned; macOS uses an ad-hoc signature without Developer ID notarization.
+OS application-control policies may require approval. Installers do not disable
+those policies.
+
+To pin a release, pass `-Version 0.2.0` to the PowerShell script or `0.2.0` as the
+first argument to `install.sh`. Scripts fail before replacing files on download
+or checksum errors. Close running WinShell sessions before upgrading.
 
 ## What it does
 
 - Independent ConPTY sessions in tabs, a shell launcher, and a session sidebar.
-- GPU-rendered native GPUI interface, dark theme, font zoom, and settings.
+- GPU-rendered native GPUI interface, font zoom, and settings.
+- System-language detection and English, Simplified/Traditional Chinese,
+  Japanese, Korean, German, French, and Spanish interfaces.
+- Midnight, Catppuccin, Nord, Light, and custom theme colors. UI and terminal
+  ANSI palettes update together, without restarting tabs.
 - Alacritty terminal engine: ANSI/VT sequences, 16/256/truecolor, scrollback,
   alternate screens, terminal responses, and wide-character cells.
 - Actual Bash, PowerShell 7, Windows PowerShell, and CMD, plus configurable
@@ -35,6 +72,8 @@ Terminal feature parity.
 Windows x64, Windows 10 1809 or newer (ConPTY), a GPUI-compatible graphics driver,
 Rust stable, and Visual Studio C++ Build Tools with a Windows SDK are required.
 Use Windows 11 for development and compatibility testing.
+On macOS, use macOS 12+, Xcode command line tools, and Rust stable. Run
+`bash scripts/package-macos.sh` to build a native `.app` archive.
 
 ```powershell
 cargo run
@@ -64,12 +103,20 @@ EXE produces a thin terminal that needs a separately available shell.
 
 For an executable-only package, use `scripts/package.ps1 -WithoutRuntime`.
 CI builds and uploads the portable package as a GitHub Actions artifact.
+`scripts/build-installer.ps1` builds the per-user setup EXE from that package,
+using Inno Setup 6.6+ (provided on the GitHub Windows runner).
 
 ## Shells and variables
 
 Settings live in `%APPDATA%\winshell\config\config.toml`; `--doctor` prints the
 resolved path. Start with [`config.example.toml`](config.example.toml), or open
 Settings with **Ctrl + ,** and select **Edit config.toml**.
+On macOS the configuration is under `~/Library/Application Support/winshell`.
+Set `language = "system"` to follow the OS or choose a language in Settings.
+Set `theme = "custom"` and edit `[custom_theme]` for your own RGB palette;
+see the example configuration. Settings also supports F6 to cycle themes and
+F7 to cycle languages. `winshell --cwd PATH --shell ID` opens a specific shell
+and working directory without changing saved preferences.
 
 ```toml
 default_shell = "bash"
@@ -141,6 +188,8 @@ current-directory tracking will be unavailable for that profile.
 | Alt + Right | Insert the first suggestion |
 | Ctrl + C | Send interrupt to the shell/program |
 
+macOS also supports Cmd + T/W, Cmd + C/V/F, Cmd + comma, and Cmd + plus/minus/0.
+
 Closing a tab terminates its shell and attached terminal processes. An exited
 tab retains its output until closed.
 
@@ -154,6 +203,7 @@ cargo run -- --doctor
 cargo run -- --smoke-test bash
 cargo run -- --smoke-test powershell
 cargo run -- --smoke-test cmd
+.\scripts\validate.ps1 -UI
 ```
 
 The smoke tests spawn real ConPTY sessions in a temporary directory and exercise
@@ -163,7 +213,7 @@ smoke tests use an isolated HOME and do not append to personal shell history.
 
 ## Current limits
 
-- Windows x64 is the supported build target. WSL/custom profiles are configurable
+- Windows x64 and macOS Intel/Apple Silicon are build targets. WSL/custom profiles are configurable
   but require their own installed runtime and compatibility testing.
 - Suggestion overlays and live working-directory tracking currently target the
   integrated Bash prompt. Suggestions deliberately skip wrapped/multiline input
@@ -181,7 +231,7 @@ smoke tests use an isolated HOME and do not append to personal shell history.
 
 ## Architecture
 
-`GPUI window → TerminalView → Session → ConPTY → real shell`
+`GPUI window → TerminalView → Session → ConPTY / Unix PTY → real shell`
 
 PTY output is parsed by `alacritty_terminal` on a reader thread. The UI paints
 the resulting cell grid at fixed cell positions. Input is sent through a bounded
@@ -191,4 +241,3 @@ access from programs is disabled; explicit user copy/paste is supported.
 
 WinShell code is licensed under Apache-2.0. Bundled programs retain their
 respective licenses; see [`THIRD_PARTY_NOTICES.md`](THIRD_PARTY_NOTICES.md).
-

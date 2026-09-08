@@ -1,3 +1,8 @@
+# UI locale: system, en, zh-CN, zh-TW, ja, ko, de, fr, es.
+language = "system"
+# midnight, catppuccin, nord, light, custom. Changes apply immediately.
+theme = "midnight"
+# On macOS the default font is Menlo; omit this line to use platform defaults.
 font_family = "Cascadia Mono"
 font_size = 15.0
 scrollback = 10000
@@ -31,3 +36,12 @@ LANG = "en_US.UTF-8"
 # name = "Nushell"
 # program = 'C:\Program Files\nu\bin\nu.exe'
 # args = []
+
+# To use your own colors, set theme = "custom" above and uncomment:
+# [custom_theme]
+# background = "#101419"
+# foreground = "#d8dee9"
+# accent = "#74d5bb"
+# panel = "#161c24"
+# border = "#303c4b"
+# selection = "#344c5b"
