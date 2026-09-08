@@ -108,7 +108,7 @@ Write-Output ('WINSHELL_' + 'SMOKE_PASS')
         "pwsh" | "powershell" => {
             "if (-not $env:WINSHELL_SMOKE_LOCAL) { Write-Output ('WINSHELL_' + 'ISOLATED') }\r"
         }
-        _ => "if not defined WINSHELL_SMOKE_LOCAL echo WINSHELL_ISO%WINSHELL_SMOKE_LOCAL%LATED\r",
+        _ => "if not defined WINSHELL_SMOKE_LOCAL set WINSHELL_SMOKE_RESULT=ISOLATED\recho WINSHELL_%WINSHELL_SMOKE_RESULT%\r",
     };
     other.write(isolation.as_bytes())?;
     wait(&other, |state| state.text().contains("WINSHELL_ISOLATED"))?;
