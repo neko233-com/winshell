@@ -52,11 +52,11 @@ Name: "desktopicon"; Description: "{cm:CreateDesktopIcon}"; Flags: unchecked
 Source: "{#PackageDir}\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
 
 [Icons]
-Name: "{group}\WinShell"; Filename: "{app}\winshell.exe"; WorkingDir: "{userprofile}"
-Name: "{autodesktop}\WinShell"; Filename: "{app}\winshell.exe"; WorkingDir: "{userprofile}"; Tasks: desktopicon
+Name: "{group}\WinShell"; Filename: "{app}\winshell.exe"; WorkingDir: "{%USERPROFILE}"
+Name: "{autodesktop}\WinShell"; Filename: "{app}\winshell.exe"; WorkingDir: "{%USERPROFILE}"; Tasks: desktopicon
 
 [Registry]
 Root: HKCU; Subkey: "Software\Microsoft\Windows\CurrentVersion\App Paths\winshell.exe"; ValueType: string; ValueData: "{app}\winshell.exe"; Flags: uninsdeletekey
 
 [Run]
-Filename: "{app}\winshell.exe"; Description: "{cm:LaunchProgram,WinShell}"; Flags: nowait postinstall skipifsilent
+Filename: "{app}\winshell.exe"; WorkingDir: "{%USERPROFILE}"; Description: "{cm:LaunchProgram,WinShell}"; Flags: nowait postinstall skipifsilent
