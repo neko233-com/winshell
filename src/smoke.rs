@@ -75,6 +75,15 @@ Write-Output ('WINSHELL_' + 'SMOKE_PASS')
     session.resize(30, 110)?;
     if id == "bash" {
         wait(&session, |state| state.at_prompt)?;
+        anyhow::ensure!(
+            !session
+                .state
+                .lock()
+                .unwrap()
+                .text()
+                .contains("syntax error"),
+            "Bash prompt contains a syntax error"
+        );
     }
     let path = script_path.to_string_lossy().replace('\\', "/");
     let command = match id {

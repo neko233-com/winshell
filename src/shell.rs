@@ -26,6 +26,10 @@ pub fn discover(config: &Config) -> Vec<ShellProfile> {
     if let Some(path) = std::env::var_os("WINSHELL_BASH") {
         candidates.push((path.into(), false));
     }
+    #[cfg(unix)]
+    for path in ["/opt/homebrew/bin/bash", "/usr/local/bin/bash", "/bin/bash"] {
+        candidates.push((PathBuf::from(path), false));
+    }
     if let Some(dir) = &executable_dir {
         candidates.push((dir.join("runtime/git/bin/bash.exe"), true));
         // Development builds can use the runtime downloaded into the project root.
@@ -59,7 +63,20 @@ pub fn discover(config: &Config) -> Vec<ShellProfile> {
             env: config.env.clone(),
         });
     }
-    if let Some(program) = find_on_path("pwsh.exe") {
+    #[cfg(unix)]
+    for (id, name, program) in [("zsh", "Zsh", "/bin/zsh"), ("sh", "POSIX sh", "/bin/sh")] {
+        if Path::new(program).is_file() {
+            profiles.push(ShellProfile {
+                id: id.into(),
+                name: name.into(),
+                program: program.into(),
+                args: vec!["-l".into()],
+                bundled: false,
+                env: config.env.clone(),
+            });
+        }
+    }
+    if let Some(program) = find_on_path(if cfg!(windows) { "pwsh.exe" } else { "pwsh" }) {
         profiles.push(ShellProfile {
             id: "pwsh".into(),
             name: "PowerShell 7".into(),
@@ -93,7 +110,16 @@ pub fn discover(config: &Config) -> Vec<ShellProfile> {
     }
     for shell in &config.shells {
         let mut env = config.env.clone();
-        env.extend(shell.env.clone());
+        for (key, value) in &shell.env {
+            env.retain(|existing, _| {
+                if cfg!(windows) {
+                    !existing.eq_ignore_ascii_case(key)
+                } else {
+                    existing != key
+                }
+            });
+            env.insert(key.clone(), value.clone());
+        }
         profiles.retain(|profile| profile.id != shell.id);
         profiles.push(ShellProfile {
             id: shell.id.clone(),
@@ -121,13 +147,22 @@ impl ShellProfile {
             std::fs::create_dir_all(&directory)?;
             let rcfile = directory.join("bash-integration-v1.bash");
             // Never edit the user's own profile or shell history.
-            std::fs::write(&rcfile, include_str!("../assets/shell-integration.bash"))
-                .context("Could not install Bash integration")?;
+            let content = include_str!("../assets/shell-integration.bash");
+            if std::fs::read_to_string(&rcfile).ok().as_deref() != Some(content) {
+                let temporary =
+                    directory.join(format!("bash-integration-{}.tmp", std::process::id()));
+                std::fs::write(&temporary, content)
+                    .context("Could not install Bash integration")?;
+                std::fs::rename(temporary, &rcfile).context("Could not update Bash integration")?;
+            }
             command.args(["--noprofile", "--rcfile"]);
             command.arg(rcfile.to_string_lossy().replace('\\', "/"));
             command.arg("-i");
-            command.env("CHERE_INVOKING", "1");
-            command.env("MSYSTEM", "MINGW64");
+            #[cfg(windows)]
+            {
+                command.env("CHERE_INVOKING", "1");
+                command.env("MSYSTEM", "MINGW64");
+            }
         } else {
             command.args(&self.args);
         }

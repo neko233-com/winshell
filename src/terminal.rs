@@ -81,6 +81,7 @@ impl EventListener for EventProxy {
 }
 
 pub struct TerminalState {
+    pub theme: crate::theme::Theme,
     pub term: Term<EventProxy>,
     pub title: String,
     pub cwd: PathBuf,
@@ -117,6 +118,7 @@ impl TerminalState {
         };
         (
             Self {
+                theme: crate::theme::Theme::default(),
                 term: Term::new(config, &size, EventProxy(tx)),
                 title: String::new(),
                 cwd: cwd.into(),
@@ -137,10 +139,10 @@ impl TerminalState {
             Color::Spec(rgb) => rgb_number(rgb),
             Color::Indexed(index) => content.colors[index as usize]
                 .map(rgb_number)
-                .unwrap_or_else(|| indexed_color(index as usize)),
+                .unwrap_or_else(|| self.theme.palette(index as usize)),
             Color::Named(name) => content.colors[name as usize]
                 .map(rgb_number)
-                .unwrap_or_else(|| indexed_color(name as usize)),
+                .unwrap_or_else(|| self.theme.palette(name as usize)),
         };
         let mut cells = Vec::new();
         for indexed in content.display_iter {
@@ -154,7 +156,7 @@ impl TerminalState {
                 && let Color::Named(named) = cell.fg
                 && (named as usize) < 8
             {
-                foreground = indexed_color(named as usize + 8);
+                foreground = self.theme.palette(named as usize + 8);
             }
             if cell.flags.contains(Flags::DIM) {
                 foreground = dim(foreground);
@@ -167,7 +169,7 @@ impl TerminalState {
                 .selection
                 .is_some_and(|selection| selection.contains(indexed.point))
             {
-                background = 0x344c5b;
+                background = self.theme.selection;
             }
             let spacer = cell
                 .flags
@@ -181,7 +183,7 @@ impl TerminalState {
                 text.extend(zero_width);
             }
             if text == " "
-                && background == BACKGROUND
+                && background == self.theme.background
                 && !cell
                     .flags
                     .intersects(Flags::ALL_UNDERLINES | Flags::STRIKEOUT)
@@ -330,7 +332,7 @@ impl Session {
                 pixel_width: 0,
                 pixel_height: 0,
             })
-            .context("Could not create Windows ConPTY")?;
+            .context("Could not create pseudoterminal")?;
         let command = profile.command(cwd)?;
         let mut child = pair
             .slave
@@ -395,7 +397,7 @@ impl Session {
                                 Event::ColorRequest(index, format) => {
                                     let rgb = state.term.colors()[index]
                                         .map(rgb_number)
-                                        .unwrap_or_else(|| indexed_color(index));
+                                        .unwrap_or_else(|| state.theme.palette(index));
                                     Some(format(Rgb {
                                         r: (rgb >> 16) as u8,
                                         g: (rgb >> 8) as u8,

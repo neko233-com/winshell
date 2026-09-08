@@ -2,6 +2,15 @@ use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::path::PathBuf;
+use std::sync::OnceLock;
+
+static CONFIG_DIRECTORY: OnceLock<PathBuf> = OnceLock::new();
+
+pub fn set_directory(path: PathBuf) -> Result<()> {
+    CONFIG_DIRECTORY
+        .set(path)
+        .map_err(|_| anyhow::anyhow!("Configuration directory is already initialized"))
+}
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct CustomShell {
@@ -17,6 +26,9 @@ pub struct CustomShell {
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(default)]
 pub struct Config {
+    pub language: String,
+    pub theme: String,
+    pub custom_theme: crate::theme::ThemeOverrides,
     pub font_family: String,
     pub font_size: f32,
     pub scrollback: usize,
@@ -32,7 +44,15 @@ pub struct Config {
 impl Default for Config {
     fn default() -> Self {
         Self {
-            font_family: "Cascadia Mono".into(),
+            language: "system".into(),
+            theme: "midnight".into(),
+            custom_theme: Default::default(),
+            font_family: if cfg!(target_os = "macos") {
+                "Menlo"
+            } else {
+                "Cascadia Mono"
+            }
+            .into(),
             font_size: 15.,
             scrollback: 10_000,
             default_shell: "bash".into(),
@@ -47,6 +67,9 @@ impl Default for Config {
 }
 
 pub fn directory() -> PathBuf {
+    if let Some(path) = CONFIG_DIRECTORY.get() {
+        return path.clone();
+    }
     directories::ProjectDirs::from("", "", "winshell")
         .map(|dirs| dirs.config_dir().to_path_buf())
         .unwrap_or_else(|| PathBuf::from(".winshell"))
@@ -65,6 +88,42 @@ impl Config {
         }
         config.font_size = config.font_size.clamp(10., 32.);
         config.scrollback = config.scrollback.clamp(100, 100_000);
+        anyhow::ensure!(
+            crate::theme::THEMES
+                .iter()
+                .any(|(id, _)| *id == config.theme),
+            "Unknown theme: {}",
+            config.theme
+        );
+        for color in [
+            &config.custom_theme.background,
+            &config.custom_theme.foreground,
+            &config.custom_theme.accent,
+            &config.custom_theme.panel,
+            &config.custom_theme.border,
+            &config.custom_theme.selection,
+        ]
+        .into_iter()
+        .flatten()
+        {
+            crate::theme::parse_color(color)?;
+        }
+        for shell in &config.shells {
+            anyhow::ensure!(
+                !shell.id.trim().is_empty() && !shell.name.trim().is_empty(),
+                "Shell profiles require an id and name"
+            );
+        }
+        for (key, value) in config
+            .env
+            .iter()
+            .chain(config.shells.iter().flat_map(|shell| shell.env.iter()))
+        {
+            anyhow::ensure!(
+                !key.is_empty() && !key.contains(['=', '\0']) && !value.contains('\0'),
+                "Invalid environment variable configuration"
+            );
+        }
         Ok(config)
     }
 

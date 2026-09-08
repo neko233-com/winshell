@@ -3,8 +3,10 @@ use gpui::{prelude::*, *};
 use std::time::Duration;
 use winshell::{
     config::{self, Config},
+    i18n::{LANGUAGES, Language},
     shell::{self, ShellProfile},
     terminal::{ACCENT, BACKGROUND, FOREGROUND, Session},
+    theme::{THEMES, Theme},
 };
 
 actions!(
@@ -24,7 +26,11 @@ actions!(
     ]
 );
 
-pub fn run(config: Config, startup_error: Option<String>) {
+pub fn run(
+    config: Config,
+    startup_error: Option<String>,
+    smoke_report: Option<std::path::PathBuf>,
+) {
     Application::new().run(move |cx| {
         cx.bind_keys([
             KeyBinding::new("ctrl-shift-t", NewTab, None),
@@ -43,6 +49,23 @@ pub fn run(config: Config, startup_error: Option<String>) {
             KeyBinding::new("ctrl-shift-v", terminal_view::Paste, Some("Terminal")),
             KeyBinding::new("shift-insert", terminal_view::Paste, Some("Terminal")),
             KeyBinding::new("ctrl-shift-f", terminal_view::Search, Some("Terminal")),
+            KeyBinding::new(
+                "alt-right",
+                terminal_view::AcceptSuggestion,
+                Some("Terminal"),
+            ),
+        ]);
+        #[cfg(target_os = "macos")]
+        cx.bind_keys([
+            KeyBinding::new("cmd-t", NewTab, None),
+            KeyBinding::new("cmd-w", CloseTab, None),
+            KeyBinding::new("cmd-,", Settings, None),
+            KeyBinding::new("cmd-=", ZoomIn, None),
+            KeyBinding::new("cmd--", ZoomOut, None),
+            KeyBinding::new("cmd-0", ResetZoom, None),
+            KeyBinding::new("cmd-c", terminal_view::Copy, Some("Terminal")),
+            KeyBinding::new("cmd-v", terminal_view::Paste, Some("Terminal")),
+            KeyBinding::new("cmd-f", terminal_view::Search, Some("Terminal")),
         ]);
         cx.on_window_closed(|cx| {
             if cx.windows().is_empty() {
@@ -51,12 +74,20 @@ pub fn run(config: Config, startup_error: Option<String>) {
         })
         .detach();
         let bounds = Bounds::centered(None, size(px(1220.), px(780.)), cx);
+        let is_validation = smoke_report.is_some();
         let result = cx.open_window(
             WindowOptions {
                 window_bounds: Some(WindowBounds::Windowed(bounds)),
                 window_min_size: Some(size(px(680.), px(430.))),
                 titlebar: Some(TitlebarOptions {
-                    title: Some("WinShell".into()),
+                    title: Some(
+                        if is_validation {
+                            "WinShell — validation"
+                        } else {
+                            "WinShell"
+                        }
+                        .into(),
+                    ),
                     ..Default::default()
                 }),
                 app_id: Some("winshell".into()),
@@ -64,12 +95,125 @@ pub fn run(config: Config, startup_error: Option<String>) {
             },
             |window, cx| cx.new(|cx| Workspace::new(config, startup_error, window, cx)),
         );
-        if let Err(error) = result {
-            eprintln!("Could not open WinShell: {error:#}");
-            cx.quit();
+        match result {
+            Ok(window) => {
+                if let Some(report) = smoke_report {
+                    start_ui_smoke(window.into(), report, cx);
+                }
+            }
+            Err(error) => {
+                eprintln!("Could not open WinShell: {error:#}");
+                if let Some(report) = smoke_report {
+                    let _ = std::fs::write(report, format!("FAIL window startup: {error:#}"));
+                }
+                cx.quit();
+            }
         }
         cx.activate(true);
     });
+}
+
+/// Exercise the actual native window and GPUI key dispatch against real Bash.
+/// This is a bounded acceptance test; its caller supplies an isolated HOME/config.
+fn start_ui_smoke(window: AnyWindowHandle, report: std::path::PathBuf, cx: &mut App) {
+    let original_clipboard = cx.read_from_clipboard();
+    cx.spawn(async move |cx| {
+        let mut step = 0usize;
+        let deadline = std::time::Instant::now() + Duration::from_secs(90);
+        loop {
+            cx.background_executor().timer(Duration::from_millis(300)).await;
+            let _ = std::fs::write(report.with_extension("progress.txt"), format!("stage {step}"));
+            let outcome = window.update(cx, |root, window, cx| -> anyhow::Result<bool> {
+                let root = root.downcast::<Workspace>().map_err(|_| anyhow::anyhow!("Root view changed"))?;
+                let active = root.read(cx).tabs.get(root.read(cx).active).map(|tab| tab.terminal.clone());
+                let key = |name: &str, window: &mut Window, cx: &mut App| -> anyhow::Result<()> {
+                    let handled = window.dispatch_keystroke(Keystroke::parse(name)?, cx);
+                    eprintln!("UI validation key {name}: handled={handled}");
+                    Ok(())
+                };
+                let text = |value: &str, window: &mut Window, cx: &mut App| {
+                    for character in value.chars() {
+                        window.dispatch_keystroke(Keystroke { key: character.to_string(), key_char: Some(character.to_string()), modifiers: Modifiers::default() }, cx);
+                    }
+                };
+                let ready = active.as_ref().is_some_and(|entity| entity.read(cx).session.state.lock().unwrap().at_prompt);
+                if let Some(error) = root.read(cx).error.as_ref() { anyhow::bail!("Workspace error: {error}"); }
+                if let Some(active) = &active {
+                    let terminal = active.read(cx);
+                    anyhow::ensure!(terminal.error.is_none(), "Terminal error: {:?}", terminal.error);
+                    let state = terminal.session.state.lock().unwrap();
+                    let _ = std::fs::write(report.with_extension("terminal.txt"), state.text());
+                    anyhow::ensure!(!state.text().contains("syntax error"), "Shell initialization produced a syntax error");
+                }
+                match step {
+                    0 if ready => { text("git st", window, cx); step += 1; }
+                    1 if active.as_ref().is_some_and(|view| !view.read(cx).hints.is_empty()) => { key("alt-right", window, cx)?; step += 1; }
+                    2 if active.as_ref().is_some_and(|view| view.read(cx).session.state.lock().unwrap().input_query().as_deref() == Some("git status")) => {
+                        key("ctrl-u", window, cx)?;
+                        text("printf 'UI_%s\\n' 'PASS'", window, cx);
+                        key("enter", window, cx)?; step += 1;
+                    }
+                    3 if ready && active.as_ref().is_some_and(|view| view.read(cx).session.state.lock().unwrap().text().contains("UI_PASS")) => {
+                        key("ctrl-shift-f", window, cx)?; step += 1;
+                    }
+                    4 if active.as_ref().is_some_and(|view| view.read(cx).search.is_some()) => { text("UI_PASS", window, cx); step += 1; }
+                    5 if active.as_ref().is_some_and(|view| view.read(cx).search_count > 0) => { key("ctrl-shift-c", window, cx)?; step += 1; }
+                    6 => {
+                        anyhow::ensure!(cx.read_from_clipboard().and_then(|item| item.text()).as_deref() == Some("UI_PASS"), "Copy did not contain the search selection");
+                        key("escape", window, cx)?; key("ctrl-shift-t", window, cx)?; step += 1;
+                    }
+                    7 if root.read(cx).tabs.len() == 2 && ready => { key("ctrl-tab", window, cx)?; step += 1; }
+                    8 if root.read(cx).active == 0 => { key("ctrl-shift-b", window, cx)?; step += 1; }
+                    9 if !root.read(cx).config.sidebar => { key("ctrl-,", window, cx)?; step += 1; }
+                    10 if root.read(cx).settings => { key("escape", window, cx)?; key("ctrl-=", window, cx)?; step += 1; }
+                    11 if root.read(cx).config.font_size == 16. => { key("ctrl-shift-w", window, cx)?; step += 1; }
+                    12 if root.read(cx).tabs.len() == 1 => { key("ctrl-shift-w", window, cx)?; step += 1; }
+                    13 if root.read(cx).tabs.is_empty() => { key("ctrl-shift-t", window, cx)?; step += 1; }
+                    14 if ready => {
+                        text("printf 'LANG_%s\\n' '中文 日本語 한국어 café'", window, cx);
+                        key("enter", window, cx)?; step += 1;
+                    }
+                    15 if ready && active.as_ref().is_some_and(|view| view.read(cx).session.state.lock().unwrap().text().contains("LANG_中文 日本語 한국어 café")) => {
+                        key("ctrl-,", window, cx)?; step += 1;
+                    }
+                    16 if root.read(cx).settings => {
+                        key("f6", window, cx)?; key("f6", window, cx)?; key("f6", window, cx)?;
+                        key("f7", window, cx)?; step += 1;
+                    }
+                    17 => {
+                        anyhow::ensure!(root.read(cx).config.theme == "light", "Theme keyboard switching failed");
+                        anyhow::ensure!(root.read(cx).config.language == "en", "Language switching failed");
+                        let terminal = active.as_ref().unwrap().read(cx);
+                        anyhow::ensure!(terminal.theme.background == 0xf8fafc && terminal.session.state.lock().unwrap().theme.background == 0xf8fafc, "Terminal palette did not follow theme");
+                        let saved = Config::load()?;
+                        anyhow::ensure!(saved.theme == "light" && saved.language == "en", "Appearance was not persisted");
+                        key("f7", window, cx)?; step += 1;
+                    }
+                    18 => {
+                        anyhow::ensure!(root.read(cx).config.language == "zh-CN", "Chinese selection failed");
+                        anyhow::ensure!(active.as_ref().unwrap().read(cx).language == Language::Chinese, "Terminal UI language did not update");
+                        key("escape", window, cx)?; step += 1;
+                    }
+                    19 => return Ok(true),
+                    _ => {},
+                }
+                anyhow::ensure!(std::time::Instant::now() < deadline, "UI acceptance test timed out at stage {step}");
+                Ok(false)
+            }).and_then(|result| result);
+            let result = match outcome {
+                Ok(false) => continue,
+                Ok(true) => "PASS native GPUI window: keyboard input, suggestions, acceptance, Bash execution, search, copy, tabs, focus, sidebar, settings, zoom, close/reopen, Chinese/Japanese/Korean/Latin text, language switching, theme palette, persisted settings".to_owned(),
+                Err(error) => format!("FAIL stage {step}: {error:#}"),
+            };
+            let _ = std::fs::write(&report, result);
+            let _ = window.update(cx, |root, _, cx| {
+                if let Ok(root) = root.downcast::<Workspace>() { root.update(cx, |workspace, _| workspace.tabs.clear()); }
+                cx.write_to_clipboard(original_clipboard.unwrap_or_else(|| ClipboardItem::new_string(String::new())));
+                cx.quit();
+            });
+            break;
+        }
+    }).detach();
 }
 
 struct Tab {
@@ -290,23 +434,23 @@ impl Workspace {
             Ok(config) => {
                 self.config = config;
                 self.profiles = shell::discover(&self.config);
-                for tab in &self.tabs {
-                    tab.terminal.update(cx, |view, cx| {
-                        view.font_size = self.config.font_size;
-                        view.font_family = self.config.font_family.clone();
-                        view.suggestions_enabled = self.config.suggestions;
-                        if !view.suggestions_enabled {
-                            view.hints.clear();
-                        }
-                        cx.notify();
-                    });
-                }
+                self.apply_appearance(cx);
                 self.error = None;
             }
             Err(error) => self.error = Some(format!("{error:#}")),
         }
         cx.notify();
     }
+    fn apply_appearance(&mut self, cx: &mut Context<Self>) {
+        for tab in &self.tabs {
+            tab.terminal.update(cx, |view, cx| {
+                view.apply_config(&self.config);
+                cx.notify();
+            });
+        }
+        cx.notify();
+    }
+
     fn key_down(&mut self, event: &KeyDownEvent, window: &mut Window, cx: &mut Context<Self>) {
         if self.launcher || self.settings {
             match event.keystroke.key.as_str() {
@@ -323,6 +467,24 @@ impl Workspace {
                         (self.launcher_index + self.profiles.len() - 1) % self.profiles.len()
                 }
                 "enter" if self.launcher => self.open_profile(self.launcher_index, window, cx),
+                "f6" if self.settings => {
+                    let index = THEMES
+                        .iter()
+                        .position(|(id, _)| *id == self.config.theme)
+                        .unwrap_or(0);
+                    self.config.theme = THEMES[(index + 1) % THEMES.len()].0.into();
+                    self.apply_appearance(cx);
+                    self.save();
+                }
+                "f7" if self.settings => {
+                    let index = LANGUAGES
+                        .iter()
+                        .position(|(id, _)| *id == self.config.language)
+                        .unwrap_or(0);
+                    self.config.language = LANGUAGES[(index + 1) % LANGUAGES.len()].0.into();
+                    self.apply_appearance(cx);
+                    self.save();
+                }
                 _ => {}
             }
             cx.stop_propagation();
@@ -330,7 +492,8 @@ impl Workspace {
         }
     }
 
-    fn button(id: &'static str, text: impl Into<SharedString>) -> Stateful<Div> {
+    fn button(&self, id: &'static str, text: impl Into<SharedString>) -> Stateful<Div> {
+        let theme = Theme::resolve(&self.config);
         div()
             .id(id)
             .px_3()
@@ -338,21 +501,27 @@ impl Workspace {
             .rounded_md()
             .cursor_pointer()
             .text_size(px(12.))
-            .text_color(rgb(0xa8b3c4))
-            .hover(|style| style.bg(rgb(0x293340)).text_color(rgb(0xf1f5fb)))
+            .text_color(theme.rgb(0xa8b3c4))
+            .hover(|style| {
+                style
+                    .bg(theme.rgb(0x293340))
+                    .text_color(theme.rgb(0xf1f5fb))
+            })
             .child(text.into())
     }
 
     fn render_sidebar(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        let theme = Theme::resolve(&self.config);
+        let language = Language::resolve(&self.config.language);
         div()
             .w(px(208.))
             .flex_shrink_0()
             .h_full()
             .flex()
             .flex_col()
-            .bg(rgb(0x161c24))
+            .bg(theme.rgb(0x161c24))
             .border_r_1()
-            .border_color(rgb(0x29313c))
+            .border_color(theme.rgb(0x29313c))
             .p_3()
             .gap_2()
             .child(
@@ -361,8 +530,8 @@ impl Workspace {
                     .pt_4()
                     .pb_2()
                     .text_size(px(10.))
-                    .text_color(rgb(0x748095))
-                    .child("WORKSPACE"),
+                    .text_color(theme.rgb(0x748095))
+                    .child(language.t("Workspace")),
             )
             .child(
                 div()
@@ -370,7 +539,7 @@ impl Workspace {
                     .pb_3()
                     .text_size(px(14.))
                     .font_weight(FontWeight::SEMIBOLD)
-                    .text_color(rgb(0xdce5f0))
+                    .text_color(theme.rgb(0xdce5f0))
                     .child(
                         self.config
                             .cwd()
@@ -386,8 +555,8 @@ impl Workspace {
                     .flex()
                     .justify_between()
                     .text_size(px(11.))
-                    .text_color(rgb(0x8896aa))
-                    .child("SESSIONS")
+                    .text_color(theme.rgb(0x8896aa))
+                    .child(language.t("Sessions"))
                     .child(self.tabs.len().to_string()),
             )
             .child(
@@ -409,15 +578,15 @@ impl Workspace {
                             .items_center()
                             .gap_2()
                             .cursor_pointer()
-                            .bg(rgb(if index == self.active {
+                            .bg(theme.rgb(if index == self.active {
                                 0x233631
                             } else {
                                 0x161c24
                             }))
-                            .hover(|style| style.bg(rgb(0x25312f)))
+                            .hover(|style| style.bg(theme.rgb(0x25312f)))
                             .child(
                                 div()
-                                    .text_color(rgb(if closed { 0x657387 } else { ACCENT }))
+                                    .text_color(theme.rgb(if closed { 0x657387 } else { ACCENT }))
                                     .child("›_"),
                             )
                             .child(
@@ -438,8 +607,8 @@ impl Workspace {
                     .pt_5()
                     .pb_2()
                     .text_size(px(10.))
-                    .text_color(rgb(0x748095))
-                    .child("SHELLS"),
+                    .text_color(theme.rgb(0x748095))
+                    .child(language.t("Shells")),
             )
             .children(self.profiles.iter().enumerate().map(|(index, profile)| {
                 div()
@@ -452,10 +621,10 @@ impl Workspace {
                     .justify_between()
                     .cursor_pointer()
                     .text_size(px(12.))
-                    .text_color(rgb(0xa8b3c4))
-                    .hover(|style| style.bg(rgb(0x222c38)))
+                    .text_color(theme.rgb(0xa8b3c4))
+                    .hover(|style| style.bg(theme.rgb(0x222c38)))
                     .child(profile.name.clone())
-                    .child(div().text_color(rgb(0x657387)).child("+"))
+                    .child(div().text_color(theme.rgb(0x657387)).child("+"))
                     .on_click(cx.listener(move |workspace, _, window, cx| {
                         workspace.open_profile(index, window, cx)
                     }))
@@ -466,13 +635,17 @@ impl Workspace {
                     .px_2()
                     .py_3()
                     .border_t_1()
-                    .border_color(rgb(0x29313c))
+                    .border_color(theme.rgb(0x29313c))
                     .text_size(px(11.))
-                    .text_color(rgb(0x748095))
-                    .child("One workspace. Every shell."),
+                    .text_color(theme.rgb(0x748095))
+                    .child(language.t("One workspace. Every shell.")),
             )
             .child(
-                Self::button("settings-side", "Settings                 Ctrl + ,").on_click(
+                self.button(
+                    "settings-side",
+                    format!("{}    Ctrl + ,", language.t("Settings")),
+                )
+                .on_click(
                     cx.listener(|workspace, _, window, cx| {
                         workspace.settings(&Settings, window, cx)
                     }),
@@ -481,13 +654,18 @@ impl Workspace {
     }
 
     fn render_settings(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        let theme = Theme::resolve(&self.config);
+        let language = Language::resolve(&self.config.language);
         div()
-            .w(px(520.))
+            .id("settings-panel")
+            .w(px(600.))
+            .max_h(px(620.))
+            .overflow_y_scroll()
             .p_6()
             .rounded_xl()
-            .bg(rgb(0x1b232e))
+            .bg(theme.rgb(0x1b232e))
             .border_1()
-            .border_color(rgb(0x3a4656))
+            .border_color(theme.rgb(0x3a4656))
             .shadow_lg()
             .flex()
             .flex_col()
@@ -496,35 +674,121 @@ impl Workspace {
                 div()
                     .text_xl()
                     .font_weight(FontWeight::SEMIBOLD)
-                    .child("Make it yours"),
+                    .child(language.t("Make it yours")),
             )
-            .child(div().text_sm().text_color(rgb(0x8e9cb0)).child(
-                "Appearance updates immediately. Shell and environment changes apply to new tabs.",
-            ))
+            .child(
+                div()
+                    .text_sm()
+                    .text_color(theme.rgb(0x8e9cb0))
+                    .child(language.t("Settings help")),
+            )
+            .child(
+                div()
+                    .flex()
+                    .flex_col()
+                    .gap_2()
+                    .child(language.t("Language"))
+                    .child(div().flex().flex_wrap().gap_1().children(
+                        LANGUAGES.iter().enumerate().map(|(index, &(id, label))| {
+                            div()
+                                .id(("language", index))
+                                .px_3()
+                                .py_2()
+                                .rounded_md()
+                                .cursor_pointer()
+                                .text_size(px(12.))
+                                .bg(gpui::rgb(if self.config.language == id {
+                                    theme.selected
+                                } else {
+                                    theme.panel
+                                }))
+                                .text_color(gpui::rgb(if self.config.language == id {
+                                    theme.accent
+                                } else {
+                                    theme.foreground
+                                }))
+                                .child(language.t(label))
+                                .on_click(cx.listener(move |workspace, _, _, cx| {
+                                    workspace.config.language = id.into();
+                                    workspace.apply_appearance(cx);
+                                    workspace.save();
+                                }))
+                        }),
+                    )),
+            )
+            .child(
+                div()
+                    .flex()
+                    .flex_col()
+                    .gap_2()
+                    .child(language.t("Theme"))
+                    .child(div().flex().flex_wrap().gap_2().children(
+                        THEMES.iter().enumerate().map(|(index, &(id, label))| {
+                            let sample = Theme::resolve(&Config {
+                                theme: id.into(),
+                                ..self.config.clone()
+                            });
+                            div()
+                                .id(("theme", index))
+                                .px_3()
+                                .py_2()
+                                .rounded_md()
+                                .cursor_pointer()
+                                .flex()
+                                .items_center()
+                                .gap_2()
+                                .border_1()
+                                .border_color(gpui::rgb(if self.config.theme == id {
+                                    theme.accent
+                                } else {
+                                    theme.border
+                                }))
+                                .child(
+                                    div()
+                                        .size(px(14.))
+                                        .rounded_full()
+                                        .bg(gpui::rgb(sample.background))
+                                        .border_2()
+                                        .border_color(gpui::rgb(sample.accent)),
+                                )
+                                .child(language.t(label))
+                                .on_click(cx.listener(move |workspace, _, _, cx| {
+                                    workspace.config.theme = id.into();
+                                    workspace.apply_appearance(cx);
+                                    workspace.save();
+                                }))
+                        }),
+                    )),
+            )
             .child(
                 div()
                     .flex()
                     .items_center()
                     .justify_between()
-                    .child(format!("Terminal font · {} px", self.config.font_size))
+                    .child(format!(
+                        "{} · {} px",
+                        language.t("Terminal font"),
+                        self.config.font_size
+                    ))
                     .child(
                         div()
                             .flex()
                             .gap_2()
-                            .child(Self::button("font-minus", "−").on_click(
+                            .child(self.button("font-minus", "−").on_click(
                                 cx.listener(|workspace, _, _, cx| workspace.zoom(-1., cx)),
                             ))
-                            .child(Self::button("font-plus", "+").on_click(
+                            .child(self.button("font-plus", "+").on_click(
                                 cx.listener(|workspace, _, _, cx| workspace.zoom(1., cx)),
                             )),
                     ),
             )
             .child(
-                Self::button(
+                self.button(
                     "toggle-hints",
                     format!(
-                        "Command suggestions    {}",
-                        if self.config.suggestions { "On" } else { "Off" }
+                        "{}    {}",
+                        language.t("Command suggestions"),
+                        language.t(if self.config.suggestions { "On" } else { "Off" })
                     ),
                 )
                 .on_click(cx.listener(|workspace, _, _, cx| {
@@ -540,17 +804,25 @@ impl Workspace {
                     cx.notify();
                 })),
             )
-            .child(div().text_sm().text_color(rgb(0x8e9cb0)).child(format!(
-                "Environment: inherited + {} global overrides",
-                self.config.env.len()
-            )))
+            .child(
+                div()
+                    .text_sm()
+                    .text_color(theme.rgb(0x8e9cb0))
+                    .child(format!(
+                        "{}: {} + {} {}",
+                        language.t("Environment"),
+                        language.t("Inherited"),
+                        self.config.env.len(),
+                        language.t("Global overrides")
+                    )),
+            )
             .child(
                 div()
                     .p_3()
                     .rounded_md()
-                    .bg(rgb(BACKGROUND))
+                    .bg(theme.rgb(BACKGROUND))
                     .text_size(px(11.))
-                    .text_color(rgb(0x96b7ab))
+                    .text_color(theme.rgb(0x96b7ab))
                     .child(
                         config::directory()
                             .join("config.toml")
@@ -563,40 +835,47 @@ impl Workspace {
                     .flex()
                     .gap_2()
                     .child(
-                        Self::button("edit-config", "Edit config.toml").on_click(cx.listener(
-                            |workspace, _, _, cx| {
+                        self.button("edit-config", language.t("Edit config.toml"))
+                            .on_click(cx.listener(|workspace, _, _, cx| {
                                 if !config::directory().join("config.toml").exists() {
                                     workspace.save();
                                 }
-                                if let Err(error) = std::process::Command::new("notepad.exe")
-                                    .arg(config::directory().join("config.toml"))
-                                    .spawn()
+                                let mut editor = std::process::Command::new(if cfg!(windows) {
+                                    "notepad.exe"
+                                } else {
+                                    "/usr/bin/open"
+                                });
+                                if cfg!(target_os = "macos") {
+                                    editor.arg("-t");
+                                }
+                                if let Err(error) =
+                                    editor.arg(config::directory().join("config.toml")).spawn()
                                 {
                                     workspace.error = Some(error.to_string());
                                 }
                                 cx.notify();
-                            },
-                        )),
+                            })),
                     )
                     .child(
-                        Self::button("reload-config", "Reload configuration").on_click(
-                            cx.listener(|workspace, _, window, cx| {
+                        self.button("reload-config", language.t("Reload configuration"))
+                            .on_click(cx.listener(|workspace, _, window, cx| {
                                 workspace.reload(&ReloadConfig, window, cx)
-                            }),
-                        ),
+                            })),
                     ),
             )
             .child(
                 div()
                     .text_xs()
-                    .text_color(rgb(0x748095))
-                    .child("Ctrl + Shift + R reloads · Esc closes settings"),
+                    .text_color(theme.rgb(0x748095))
+                    .child(language.t("Settings shortcuts")),
             )
     }
 }
 
 impl Render for Workspace {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let theme = Theme::resolve(&self.config);
+        let language = Language::resolve(&self.config.language);
         let active = self.tabs.get(self.active).map(|tab| tab.terminal.clone());
         let status = active.as_ref().map(|terminal| {
             let terminal = terminal.read(cx);
@@ -604,72 +883,72 @@ impl Render for Workspace {
             (
                 state.cwd.display().to_string(),
                 if state.closed {
-                    "Exited"
+                    language.t("Exited")
                 } else if state.at_prompt {
-                    "Ready"
+                    language.t("Ready")
                 } else {
-                    "Running"
+                    language.t("Running")
                 },
                 terminal.session.profile.name.clone(),
                 terminal.session.profile.bundled,
                 state.last_exit,
             )
         });
-        div().relative().size_full().flex().flex_col().bg(rgb(BACKGROUND)).text_color(rgb(FOREGROUND)).font_family("Segoe UI").text_size(px(13.))
+        div().relative().size_full().flex().flex_col().bg(theme.rgb(BACKGROUND)).text_color(theme.rgb(FOREGROUND)).font_family(if cfg!(target_os = "macos") { ".AppleSystemUIFont" } else { "Segoe UI" }).text_size(px(13.))
             .track_focus(&self.focus).key_context("WinShell")
             .on_action(cx.listener(Self::new_tab)).on_action(cx.listener(Self::close_tab))
             .on_action(cx.listener(Self::next_tab)).on_action(cx.listener(Self::previous_tab))
             .on_action(cx.listener(Self::sidebar)).on_action(cx.listener(Self::launcher)).on_action(cx.listener(Self::settings))
             .on_action(cx.listener(Self::zoom_in)).on_action(cx.listener(Self::zoom_out)).on_action(cx.listener(Self::reset_zoom)).on_action(cx.listener(Self::reload))
             .on_key_down(cx.listener(Self::key_down))
-            .child(div().h(px(54.)).flex_shrink_0().px_4().flex().items_center().justify_between().bg(rgb(0x19202a)).border_b_1().border_color(rgb(0x29313c))
+            .child(div().h(px(54.)).flex_shrink_0().px_4().flex().items_center().justify_between().bg(theme.rgb(0x19202a)).border_b_1().border_color(theme.rgb(0x29313c))
                 .child(div().flex().items_center().gap_3()
-                    .child(div().px_2().py_1().rounded_md().bg(rgb(ACCENT)).text_color(rgb(0x102720)).font_weight(FontWeight::BOLD).font_family("Consolas").child("›_"))
+                    .child(div().px_2().py_1().rounded_md().bg(theme.rgb(ACCENT)).text_color(theme.rgb(0x102720)).font_weight(FontWeight::BOLD).font_family("Consolas").child("›_"))
                     .child(div().text_size(px(18.)).font_weight(FontWeight::SEMIBOLD).child("winshell"))
-                    .child(div().text_size(px(10.)).px_2().py_1().rounded_sm().bg(rgb(0x2a3340)).text_color(rgb(0x8f9db1)).child("PREVIEW 0.1")))
+                    .child(div().text_size(px(10.)).px_2().py_1().rounded_sm().bg(theme.rgb(0x2a3340)).text_color(theme.rgb(0x8f9db1)).child(concat!("v", env!("CARGO_PKG_VERSION")))))
                 .child(div().flex().gap_2()
-                    .child(Self::button("sidebar", "Sidebar").on_click(cx.listener(|workspace, _, window, cx| workspace.sidebar(&ToggleSidebar, window, cx))))
-                    .child(Self::button("launcher", "New terminal   Ctrl + Shift + P").on_click(cx.listener(|workspace, _, window, cx| workspace.launcher(&Launcher, window, cx))))))
+                    .child(self.button("sidebar", language.t("Sidebar")).on_click(cx.listener(|workspace, _, window, cx| workspace.sidebar(&ToggleSidebar, window, cx))))
+                    .child(self.button("launcher", format!("{}   Ctrl + Shift + P", language.t("New terminal"))).on_click(cx.listener(|workspace, _, window, cx| workspace.launcher(&Launcher, window, cx))))))
             .child(div().flex().flex_1().min_h_0()
                 .when(self.config.sidebar, |view| view.child(self.render_sidebar(cx)))
                 .child(div().flex().flex_col().flex_1().min_w_0().min_h_0()
-                    .child(div().h(px(45.)).flex_shrink_0().flex().items_center().bg(rgb(0x131921)).border_b_1().border_color(rgb(0x29313c))
+                    .child(div().h(px(45.)).flex_shrink_0().flex().items_center().bg(theme.rgb(0x131921)).border_b_1().border_color(theme.rgb(0x29313c))
                         .child(div().id("tabbar").flex().flex_1().min_w_0().h_full().overflow_x_scroll()
                             .children(self.tabs.iter().enumerate().map(|(index, tab)| {
                                 div().id(("tab", tab.id)).h_full().w(px(206.)).flex_shrink_0().px_3().flex().items_center().gap_2().cursor_pointer()
-                                    .border_b_2().border_color(rgb(if index == self.active { ACCENT } else { 0x131921 }))
-                                    .bg(rgb(if index == self.active { BACKGROUND } else { 0x131921 }))
-                                    .child(div().text_color(rgb(ACCENT)).child("›_"))
+                                    .border_b_2().border_color(theme.rgb(if index == self.active { ACCENT } else { 0x131921 }))
+                                    .bg(theme.rgb(if index == self.active { BACKGROUND } else { 0x131921 }))
+                                    .child(div().text_color(theme.rgb(ACCENT)).child("›_"))
                                     .child(div().flex_1().truncate().text_size(px(12.)).child(tab.terminal.read(cx).label()))
-                                    .child(div().id(("close", tab.id)).px_1().rounded_sm().hover(|style| style.bg(rgb(0x3f3038))).text_color(rgb(0x7d899b)).child("×")
+                                    .child(div().id(("close", tab.id)).px_1().rounded_sm().hover(|style| style.bg(theme.rgb(0x3f3038))).text_color(theme.rgb(0x7d899b)).child("×")
                                         .on_click(cx.listener(move |workspace, _, window, cx| { cx.stop_propagation(); workspace.close(index, window, cx); })))
                                     .on_click(cx.listener(move |workspace, _, window, cx| workspace.activate(index, window, cx)))
                             })))
-                        .child(Self::button("new-tab", "+").on_click(cx.listener(|workspace, _, window, cx| workspace.new_tab(&NewTab, window, cx)))))
+                        .child(self.button("new-tab", "+").on_click(cx.listener(|workspace, _, window, cx| workspace.new_tab(&NewTab, window, cx)))))
                     .when_some(active, |view, terminal| view.child(terminal))
                     .when(self.tabs.is_empty(), |view| view.child(div().size_full().flex().flex_col().items_center().justify_center().gap_4()
-                        .child(div().text_3xl().text_color(rgb(ACCENT)).child("Your next command starts here."))
-                        .child(div().text_color(rgb(0x8290a5)).child("Open Bash, PowerShell, or your own shell in a new tab."))
-                        .child(Self::button("start", "+ Open a terminal").on_click(cx.listener(|workspace, _, window, cx| workspace.launcher(&Launcher, window, cx))))))))
-            .when_some(self.error.clone(), |view, error| view.child(div().px_4().py_2().flex().justify_between().bg(rgb(0x3d2830)).text_color(rgb(0xffb5c0))
-                .child(error).child(Self::button("dismiss", "Dismiss").on_click(cx.listener(|workspace, _, _, cx| { workspace.error = None; cx.notify(); })))))
-            .child(div().h(px(30.)).flex_shrink_0().px_4().flex().items_center().justify_between().border_t_1().border_color(rgb(0x29313c)).bg(rgb(0x161d25)).text_size(px(10.)).text_color(rgb(0x8190a4))
+                        .child(div().text_3xl().text_color(theme.rgb(ACCENT)).child(language.t("Your next command starts here.")))
+                        .child(div().text_color(theme.rgb(0x8290a5)).child(language.t("Empty help")))
+                        .child(self.button("start", format!("+ {}", language.t("New terminal"))).on_click(cx.listener(|workspace, _, window, cx| workspace.launcher(&Launcher, window, cx))))))))
+            .when_some(self.error.clone(), |view, error| view.child(div().px_4().py_2().flex().justify_between().bg(theme.rgb(0x3d2830)).text_color(theme.rgb(0xffb5c0))
+                .child(error).child(self.button("dismiss", language.t("Dismiss")).on_click(cx.listener(|workspace, _, _, cx| { workspace.error = None; cx.notify(); })))))
+            .child(div().h(px(30.)).flex_shrink_0().px_4().flex().items_center().justify_between().border_t_1().border_color(theme.rgb(0x29313c)).bg(theme.rgb(0x161d25)).text_size(px(10.)).text_color(theme.rgb(0x8190a4))
                 .child(div().flex().items_center().gap_3().min_w_0()
-                    .child(div().text_color(rgb(ACCENT)).child(status.as_ref().map(|s| format!("● {}", s.1)).unwrap_or_else(|| "● WinShell".into())))
+                    .child(div().text_color(theme.rgb(ACCENT)).child(status.as_ref().map(|s| format!("● {}", s.1)).unwrap_or_else(|| "● WinShell".into())))
                     .child(div().truncate().child(status.as_ref().map(|s| s.0.clone()).unwrap_or_default())))
-                .child(status.as_ref().map(|s| format!("{}{}  ·  ConPTY  ·  UTF-8  ·  {} px", s.2, if s.3 { " / bundled" } else { "" }, self.config.font_size)).unwrap_or_default()))
+                .child(status.as_ref().map(|s| format!("{}{}  ·  {}  ·  UTF-8  ·  {} px", s.2, if s.3 { format!(" / {}", language.t("Bundled")) } else { String::new() }, if cfg!(windows) { "ConPTY" } else { "PTY" }, self.config.font_size)).unwrap_or_default()))
             .when(self.launcher || self.settings, |view| view.child(
-                div().absolute().inset_0().flex().items_start().justify_center().pt(px(100.)).bg(rgba(0x080b11bb))
+                div().absolute().inset_0().flex().items_start().justify_center().pt(px(50.)).bg(rgba(0x080b11bb))
                     .when(self.launcher, |view| view.child(
-                        div().w(px(500.)).p_4().rounded_xl().bg(rgb(0x1b232e)).border_1().border_color(rgb(0x3a4656)).shadow_lg().flex().flex_col().gap_2()
-                            .child(div().px_2().py_3().text_lg().font_weight(FontWeight::SEMIBOLD).child("Open a new terminal"))
+                        div().w(px(500.)).p_4().rounded_xl().bg(theme.rgb(0x1b232e)).border_1().border_color(theme.rgb(0x3a4656)).shadow_lg().flex().flex_col().gap_2()
+                            .child(div().px_2().py_3().text_lg().font_weight(FontWeight::SEMIBOLD).child(language.t("Open a new terminal")))
                             .children(self.profiles.iter().enumerate().map(|(index, profile)| {
                                 div().id(("launch", index)).p_3().rounded_md().flex().flex_col().gap_1().cursor_pointer()
-                                    .bg(rgb(if index == self.launcher_index { 0x2a413b } else { 0x1b232e })).hover(|style| style.bg(rgb(0x2a413b)))
-                                    .child(profile.name.clone()).child(div().text_xs().text_color(rgb(0x849d94)).truncate().child(profile.program.display().to_string()))
+                                    .bg(theme.rgb(if index == self.launcher_index { 0x2a413b } else { 0x1b232e })).hover(|style| style.bg(theme.rgb(0x2a413b)))
+                                    .child(profile.name.clone()).child(div().text_xs().text_color(theme.rgb(0x849d94)).truncate().child(profile.program.display().to_string()))
                                     .on_click(cx.listener(move |workspace, _, window, cx| workspace.open_profile(index, window, cx)))
                             }))
-                            .child(div().px_2().pt_3().text_xs().text_color(rgb(0x748095)).child("↑ ↓ to choose · Enter to open · Esc to close"))
+                            .child(div().px_2().pt_3().text_xs().text_color(theme.rgb(0x748095)).child(language.t("Launcher shortcuts")))
                     ))
                     .when(self.settings, |view| view.child(self.render_settings(cx)))
             ))

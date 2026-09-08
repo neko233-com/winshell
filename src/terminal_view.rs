@@ -13,17 +13,21 @@ use std::{
 };
 use winshell::{
     config::Config,
+    i18n::Language,
     input,
     suggestions::{Suggestion, Suggestions},
-    terminal::{ACCENT, BACKGROUND, FOREGROUND, Frame, Session},
+    terminal::{ACCENT, Frame, Session},
+    theme::Theme,
 };
 
-actions!(terminal_view, [Copy, Paste, Search]);
+actions!(terminal_view, [Copy, Paste, Search, AcceptSuggestion]);
 
 pub struct TerminalView {
     pub session: Session,
     pub focus: FocusHandle,
     pub font_size: f32,
+    pub language: Language,
+    pub theme: Theme,
     pub font_family: String,
     pub suggestions_enabled: bool,
     pub error: Option<String>,
@@ -55,6 +59,8 @@ impl TerminalView {
             session,
             focus: cx.focus_handle(),
             font_size: config.font_size,
+            language: Language::resolve(&config.language),
+            theme: Theme::resolve(config),
             font_family: config.font_family.clone(),
             suggestions_enabled: config.suggestions,
             error: None,
@@ -74,6 +80,7 @@ impl TerminalView {
             cursor_visible: true,
             scroll_remainder: 0.,
         };
+        view.apply_config(config);
         view.load_history();
         cx.on_focus(&view.focus, window, |view, _, cx| {
             view.focus_report(true);
@@ -86,6 +93,33 @@ impl TerminalView {
         })
         .detach();
         view
+    }
+
+    pub fn apply_config(&mut self, config: &Config) {
+        self.font_size = config.font_size;
+        self.font_family = config.font_family.clone();
+        self.language = Language::resolve(&config.language);
+        self.theme = Theme::resolve(config);
+        self.session.state.lock().unwrap().theme = self.theme;
+        self.suggestions_enabled = config.suggestions;
+        if !config.suggestions {
+            self.hints.clear();
+        }
+        self.session.dirty.store(true, Ordering::Release);
+    }
+
+    fn terminal_font(&self) -> Font {
+        let mut result = font(self.font_family.clone());
+        result.fallbacks = Some(FontFallbacks::from_fonts(vec![
+            "Consolas".into(),
+            "Microsoft YaHei UI".into(),
+            "Microsoft JhengHei UI".into(),
+            "Yu Gothic UI".into(),
+            "Malgun Gothic".into(),
+            "Segoe UI Emoji".into(),
+            "Segoe UI Symbol".into(),
+        ]));
+        result
     }
 
     fn focus_report(&mut self, focused: bool) {
@@ -265,6 +299,14 @@ impl TerminalView {
             }
         }
         cx.notify();
+    }
+
+    fn accept_suggestion(&mut self, _: &AcceptSuggestion, _: &mut Window, cx: &mut Context<Self>) {
+        if self.search.is_none() && !self.hints.is_empty() {
+            self.accept_hint(0, cx);
+        } else {
+            self.send(b"\x1b[1;3C".to_vec());
+        }
     }
 
     fn key_down(&mut self, event: &KeyDownEvent, _: &mut Window, cx: &mut Context<Self>) {
@@ -466,6 +508,8 @@ impl TerminalView {
 
 impl Render for TerminalView {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let theme = self.theme;
+        let language = self.language;
         let state = self.session.state.lock().unwrap();
         let closed = state.closed;
         let error = self.error.clone().or(state.error.clone());
@@ -480,6 +524,7 @@ impl Render for TerminalView {
             .on_action(cx.listener(Self::copy))
             .on_action(cx.listener(Self::paste))
             .on_action(cx.listener(Self::search))
+            .on_action(cx.listener(Self::accept_suggestion))
             .on_key_down(cx.listener(Self::key_down))
             .when(self.search.is_some(), |view| {
                 view.child(
@@ -489,17 +534,28 @@ impl Render for TerminalView {
                         .flex()
                         .items_center()
                         .gap_3()
-                        .bg(rgb(0x202832))
-                        .child(div().text_color(rgb(ACCENT)).child("Find"))
+                        .bg(theme.rgb(0x202832))
+                        .child(
+                            div()
+                                .text_color(theme.rgb(ACCENT))
+                                .child(language.t("Find")),
+                        )
                         .child(div().flex_1().child(format!(
                             "{}{}│",
                             self.search.as_deref().unwrap_or_default(),
                             self.composition
                         )))
-                        .child(div().text_color(rgb(0x8c98aa)).text_xs().child(format!(
-                            "{} matches · Enter next · Esc close",
-                            self.search_count
-                        ))),
+                        .child(
+                            div()
+                                .text_color(theme.rgb(0x8c98aa))
+                                .text_xs()
+                                .child(format!(
+                                    "{} {} · {}",
+                                    self.search_count,
+                                    language.t("matches"),
+                                    language.t("Find shortcuts")
+                                )),
+                        ),
                 )
             })
             .child(
@@ -527,8 +583,8 @@ impl Render for TerminalView {
                         .mb_3()
                         .rounded_lg()
                         .border_1()
-                        .border_color(rgb(0x30413f))
-                        .bg(rgb(0x192322))
+                        .border_color(theme.rgb(0x30413f))
+                        .bg(theme.rgb(0x192322))
                         .overflow_hidden()
                         .child(
                             div()
@@ -537,9 +593,9 @@ impl Render for TerminalView {
                                 .flex()
                                 .justify_between()
                                 .text_xs()
-                                .text_color(rgb(0x8baca3))
-                                .child("SUGGESTIONS")
-                                .child("Alt + → to accept · Tab for shell completion"),
+                                .text_color(theme.rgb(0x8baca3))
+                                .child(language.t("Suggestions"))
+                                .child(language.t("Suggestion shortcuts")),
                         )
                         .children(self.hints.iter().enumerate().map(|(index, hint)| {
                             div()
@@ -550,18 +606,18 @@ impl Render for TerminalView {
                                 .justify_between()
                                 .gap_4()
                                 .cursor_pointer()
-                                .hover(|style| style.bg(rgb(0x263834)))
+                                .hover(|style| style.bg(theme.rgb(0x263834)))
                                 .child(
                                     div()
                                         .font_family(self.font_family.clone())
-                                        .text_color(rgb(0xbfe9dc))
+                                        .text_color(theme.rgb(0xbfe9dc))
                                         .child(hint.command.clone()),
                                 )
                                 .child(
                                     div()
                                         .text_xs()
-                                        .text_color(rgb(0x8ba49e))
-                                        .child(hint.detail.clone()),
+                                        .text_color(theme.rgb(0x8ba49e))
+                                        .child(language.t(&hint.detail).to_owned()),
                                 )
                                 .on_click(cx.listener(move |view, _, window, cx| {
                                     view.accept_hint(index, cx);
@@ -575,13 +631,19 @@ impl Render for TerminalView {
                     div()
                         .px_4()
                         .py_3()
-                        .bg(rgb(0x282329))
-                        .text_color(rgb(0xeac48b))
-                        .child("Session exited. Ctrl + Shift + T opens a new terminal."),
+                        .bg(theme.rgb(0x282329))
+                        .text_color(theme.rgb(0xeac48b))
+                        .child(language.t("Session ended")),
                 )
             })
             .when_some(error, |view, error| {
-                view.child(div().px_4().py_2().text_color(rgb(0xef7d8e)).child(error))
+                view.child(
+                    div()
+                        .px_4()
+                        .py_2()
+                        .text_color(theme.rgb(0xef7d8e))
+                        .child(error),
+                )
             })
     }
 }
@@ -716,11 +778,11 @@ impl Element for TerminalCanvas {
         cx: &mut App,
     ) -> CanvasState {
         self.view.update(cx, |view, _| {
-            let base_font = font(view.font_family.clone());
+            let base_font = view.terminal_font();
             let run = TextRun {
                 len: 1,
                 font: base_font,
-                color: rgb(FOREGROUND).into(),
+                color: rgb(view.theme.foreground).into(),
                 background_color: None,
                 underline: None,
                 strikethrough: None,
@@ -761,8 +823,9 @@ impl Element for TerminalCanvas {
         let view = self.view.read(cx);
         let focus = view.focus.clone();
         let font_size = px(view.font_size);
-        let base_font = font(view.font_family.clone());
+        let base_font = view.terminal_font();
         let composition = view.composition.clone();
+        let theme = view.theme;
         let searching = view.search.is_some();
         let show_cursor = view.cursor_visible && focus.is_focused(window) && !searching;
         window.handle_input(
@@ -782,7 +845,7 @@ impl Element for TerminalCanvas {
                     } else {
                         1.
                     };
-                if glyph.bg != BACKGROUND {
+                if glyph.bg != theme.background {
                     window.paint_quad(fill(
                         Bounds::new(origin, size(width, state.line_height)),
                         rgb(glyph.bg),
@@ -851,9 +914,9 @@ impl Element for TerminalCanvas {
                     window.paint_quad(fill(
                         cursor_bounds,
                         rgba(if shape == CursorShape::Block {
-                            0x74d5bb70
+                            (theme.accent << 8) | 0x70
                         } else {
-                            0x74d5bbff
+                            (theme.accent << 8) | 0xff
                         }),
                     ));
                 }
@@ -861,8 +924,8 @@ impl Element for TerminalCanvas {
                     let run = TextRun {
                         len: composition.len(),
                         font: base_font,
-                        color: rgb(ACCENT).into(),
-                        background_color: Some(rgb(BACKGROUND).into()),
+                        color: rgb(theme.accent).into(),
+                        background_color: Some(rgb(theme.background).into()),
                         underline: Some(UnderlineStyle {
                             thickness: px(1.),
                             color: None,

@@ -1,6 +1,6 @@
 [package]
 name = "winshell"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2024"
 rust-version = "1.88"
 description = "A modern, native Windows terminal built with Rust and GPUI"
@@ -17,6 +17,9 @@ directories = "6"
 unicode-width = "0.2"
 gpui = { version = "=0.2.2", default-features = false, features = ["windows-manifest"] }
 
+[build-dependencies]
+winresource = "0.1.31"
+
 [profile.dev]
 debug = 0
 
@@ -24,4 +27,3 @@ debug = 0
 lto = "thin"
 codegen-units = 1
 strip = true
-

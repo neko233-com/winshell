@@ -1,0 +1,88 @@
+name: Build and validate
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: build-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  windows:
+    runs-on: windows-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@v2
+      - name: Formatting
+        run: cargo fmt --all -- --check
+      - name: Clippy
+        run: cargo clippy --all-targets --locked -- -D warnings
+      - name: Unit tests
+        run: cargo test --locked
+      - name: Build
+        run: cargo build --locked
+      - name: Prepare standalone runtime
+        run: .\scripts\setup-runtime.ps1
+      - name: Real shell and native window tests
+        run: .\scripts\validate.ps1 -UI
+      - name: Release build and portable package
+        run: .\scripts\package.ps1
+      - name: Installer
+        run: .\scripts\build-installer.ps1
+      - name: Install and validate packaged executable
+        shell: pwsh
+        run: |
+          $setup = Get-Item dist/*-setup.exe
+          $install = Join-Path $env:RUNNER_TEMP 'WinShell-installed'
+          $process = Start-Process -FilePath $setup.FullName -ArgumentList '/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART', "/DIR=`"$install`"" -PassThru -Wait
+          if ($process.ExitCode -ne 0) { throw 'Installer failed' }
+          .\scripts\validate.ps1 -Executable "$install\winshell.exe"
+          $uninstall = Start-Process -FilePath "$install\unins000.exe" -ArgumentList '/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART' -PassThru -Wait
+          if ($uninstall.ExitCode -ne 0 -or (Test-Path "$install\winshell.exe")) { throw 'Uninstall failed' }
+      - uses: actions/upload-artifact@v4
+        with:
+          name: winshell-windows-x64
+          path: |
+            dist/*.zip
+            dist/*-setup.exe
+            dist/*.sha256
+          if-no-files-found: error
+  macos:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: macos-15
+            arch: arm64
+          - runner: macos-15-intel
+            arch: x64
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 60
+    env:
+      MACOSX_DEPLOYMENT_TARGET: '12.0'
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Unit tests
+        run: cargo test --locked
+      - name: Package native application and test real Bash
+        run: bash scripts/package-macos.sh
+      - name: Native GPUI window acceptance
+        run: |
+          target/release/winshell --ui-smoke-test "$RUNNER_TEMP/winshell-ui.txt"
+          cat "$RUNNER_TEMP/winshell-ui.txt"
+      - name: Installer syntax
+        run: sh -n install.sh && bash -n scripts/package-macos.sh
+      - uses: actions/upload-artifact@v4
+        with:
+          name: winshell-macos-${{ matrix.arch }}
+          path: |
+            dist/*.tar.gz
+            dist/*.sha256
+          if-no-files-found: error
