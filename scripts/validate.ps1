@@ -16,10 +16,15 @@ foreach ($validationShell in @('bash', 'powershell', 'cmd')) {
 }
 if ($UI) {
     $report = Join-Path $outputDir 'native-ui.txt'
-    $process = Start-Process -FilePath $Executable -ArgumentList '--ui-smoke-test', "`"$report`"" -PassThru -WindowStyle Hidden
+    # Native window tests need an actual visible window and committed input frame.
+    $process = Start-Process -FilePath $Executable -ArgumentList '--ui-smoke-test', "`"$report`"" -PassThru
     if (-not $process.WaitForExit(120000)) { throw "Native UI validation timed out (PID $($process.Id))" }
     $result = Get-Content -LiteralPath $report -Raw
-    if ($process.ExitCode -ne 0 -or $result -notlike 'PASS*') { throw $result }
+    if ($process.ExitCode -ne 0 -or $result -notlike 'PASS*') {
+        $terminalReport = [IO.Path]::ChangeExtension($report, 'terminal.txt')
+        if (Test-Path -LiteralPath $terminalReport) { Get-Content -LiteralPath $terminalReport }
+        throw $result
+    }
     Write-Output $result
 }
 Write-Output "Validation reports: $outputDir"

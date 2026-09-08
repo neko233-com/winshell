@@ -36,6 +36,7 @@ pub struct TerminalView {
     pub search_index: usize,
     pub hints: Vec<Suggestion>,
     pub hint_query: String,
+    pub input_painted: std::cell::Cell<bool>,
     history: Suggestions,
     prompt_count: u64,
     bounds: Bounds<Pixels>,
@@ -69,6 +70,7 @@ impl TerminalView {
             search_index: 0,
             hints: vec![],
             hint_query: String::new(),
+            input_painted: std::cell::Cell::new(false),
             history: Suggestions::default(),
             prompt_count: 0,
             bounds: Bounds::default(),
@@ -524,8 +526,18 @@ impl Render for TerminalView {
         let state = self.session.state.lock().unwrap();
         let closed = state.closed;
         let error = self.error.clone().or(state.error.clone());
+        let cursor_y = state.term.grid().cursor.point.line.0.max(0) as f32 * self.line_height;
+        let suggestion_height = 40. + self.hints.len() as f32 * 40.;
+        let suggestion_top = if cursor_y + self.line_height + suggestion_height
+            < f32::from(self.session.size.rows) * self.line_height
+        {
+            16. + cursor_y + self.line_height
+        } else {
+            (16. + cursor_y - suggestion_height).max(16.)
+        };
         drop(state);
         div()
+            .relative()
             .size_full()
             .flex()
             .flex_col()
@@ -590,8 +602,15 @@ impl Render for TerminalView {
             .when(self.search.is_none() && !self.hints.is_empty(), |view| {
                 view.child(
                     div()
-                        .mx_4()
-                        .mb_3()
+                        // Suggestions must never resize the PTY while Readline
+                        // is receiving input. A flowing panel caused SIGWINCH
+                        // redraws to race with accepted suffixes on ConPTY.
+                        .absolute()
+                        .occlude()
+                        .left_4()
+                        .right_4()
+                        .top(px(suggestion_top))
+                        .shadow_lg()
                         .rounded_lg()
                         .border_1()
                         .border_color(theme.rgb(0x30413f))
@@ -844,6 +863,9 @@ impl Element for TerminalCanvas {
             ElementInputHandler::new(bounds, self.view.clone()),
             cx,
         );
+        // The platform handler is committed with this frame. An automated key
+        // dispatch must not precede the first paint after focus/tab changes.
+        view.input_painted.set(focus.is_focused(window));
         window.with_content_mask(Some(ContentMask { bounds }), |window| {
             for glyph in &state.frame.cells {
                 let origin = point(

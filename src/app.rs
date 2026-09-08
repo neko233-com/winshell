@@ -119,6 +119,7 @@ fn start_ui_smoke(window: AnyWindowHandle, report: std::path::PathBuf, cx: &mut 
     let original_clipboard = cx.read_from_clipboard();
     cx.spawn(async move |cx| {
         let mut step = 0usize;
+        let mut input_size = None;
         let deadline = std::time::Instant::now() + Duration::from_secs(90);
         loop {
             cx.background_executor().timer(Duration::from_millis(300)).await;
@@ -129,34 +130,45 @@ fn start_ui_smoke(window: AnyWindowHandle, report: std::path::PathBuf, cx: &mut 
                 let key = |name: &str, window: &mut Window, cx: &mut App| -> anyhow::Result<()> {
                     let handled = window.dispatch_keystroke(Keystroke::parse(name)?, cx);
                     eprintln!("UI validation key {name}: handled={handled}");
+                    anyhow::ensure!(handled, "Key {name} had no registered handler");
                     Ok(())
                 };
-                let text = |value: &str, window: &mut Window, cx: &mut App| {
+                let text = |value: &str, window: &mut Window, cx: &mut App| -> anyhow::Result<()> {
                     for character in value.chars() {
-                        window.dispatch_keystroke(Keystroke { key: character.to_string(), key_char: Some(character.to_string()), modifiers: Modifiers::default() }, cx);
+                        let handled = window.dispatch_keystroke(Keystroke { key: character.to_string(), key_char: Some(character.to_string()), modifiers: Modifiers::default() }, cx);
+                        anyhow::ensure!(handled, "Character {character:?} had no registered input handler");
                     }
+                    Ok(())
                 };
-                let ready = active.as_ref().is_some_and(|entity| entity.read(cx).session.state.lock().unwrap().at_prompt);
+                let ready = active.as_ref().is_some_and(|entity| {
+                    let terminal = entity.read(cx);
+                    terminal.input_painted.get() && terminal.session.state.lock().unwrap().at_prompt
+                });
                 if let Some(error) = root.read(cx).error.as_ref() { anyhow::bail!("Workspace error: {error}"); }
                 if let Some(active) = &active {
                     let terminal = active.read(cx);
                     anyhow::ensure!(terminal.error.is_none(), "Terminal error: {:?}", terminal.error);
                     let state = terminal.session.state.lock().unwrap();
                     let _ = std::fs::write(report.with_extension("terminal.txt"), state.text());
+                    let _ = std::fs::write(report.with_extension("status.txt"), format!("stage={step} painted={} focused={} prompt={} tabs={} active={}", terminal.input_painted.get(), terminal.focus.is_focused(window), state.at_prompt, root.read(cx).tabs.len(), root.read(cx).active));
                     anyhow::ensure!(!state.text().contains("syntax error"), "Shell initialization produced a syntax error");
                 }
                 match step {
-                    0 if ready => { text("git st", window, cx); step += 1; }
-                    1 if active.as_ref().is_some_and(|view| !view.read(cx).hints.is_empty()) => { key("alt-right", window, cx)?; step += 1; }
+                    0 if ready => { input_size = active.as_ref().map(|view| view.read(cx).session.size); text("git st", window, cx)?; step += 1; }
+                    1 if active.as_ref().is_some_and(|view| !view.read(cx).hints.is_empty()) => {
+                        anyhow::ensure!(active.as_ref().map(|view| view.read(cx).session.size) == input_size, "Suggestion panel resized the PTY during input");
+                        key("alt-right", window, cx)?; step += 1;
+                    }
                     2 if active.as_ref().is_some_and(|view| view.read(cx).session.state.lock().unwrap().input_query().as_deref() == Some("git status")) => {
+                        anyhow::ensure!(active.as_ref().map(|view| view.read(cx).session.size) == input_size, "Accepting a suggestion resized the PTY");
                         key("ctrl-u", window, cx)?;
-                        text("printf 'UI_%s\\n' 'PASS'", window, cx);
+                        text("printf 'UI_%s\\n' 'PASS'", window, cx)?;
                         key("enter", window, cx)?; step += 1;
                     }
                     3 if ready && active.as_ref().is_some_and(|view| view.read(cx).session.state.lock().unwrap().text().contains("UI_PASS")) => {
                         key("ctrl-shift-f", window, cx)?; step += 1;
                     }
-                    4 if active.as_ref().is_some_and(|view| view.read(cx).search.is_some()) => { text("UI_PASS", window, cx); step += 1; }
+                    4 if active.as_ref().is_some_and(|view| view.read(cx).search.is_some()) => { text("UI_PASS", window, cx)?; step += 1; }
                     5 if active.as_ref().is_some_and(|view| view.read(cx).search_count > 0) => { key("ctrl-shift-c", window, cx)?; step += 1; }
                     6 => {
                         anyhow::ensure!(cx.read_from_clipboard().and_then(|item| item.text()).as_deref() == Some("UI_PASS"), "Copy did not contain the search selection");
@@ -170,7 +182,7 @@ fn start_ui_smoke(window: AnyWindowHandle, report: std::path::PathBuf, cx: &mut 
                     12 if root.read(cx).tabs.len() == 1 => { key("ctrl-shift-w", window, cx)?; step += 1; }
                     13 if root.read(cx).tabs.is_empty() => { key("ctrl-shift-t", window, cx)?; step += 1; }
                     14 if ready => {
-                        text("printf 'LANG_%s\\n' '中文 日本語 한국어 café'", window, cx);
+                        text("printf 'LANG_%s\\n' '中文 日本語 한국어 café'", window, cx)?;
                         key("enter", window, cx)?; step += 1;
                     }
                     15 if ready && active.as_ref().is_some_and(|view| view.read(cx).session.state.lock().unwrap().text().contains("LANG_中文 日本語 한국어 café")) => {
@@ -195,7 +207,7 @@ fn start_ui_smoke(window: AnyWindowHandle, report: std::path::PathBuf, cx: &mut 
                         key("escape", window, cx)?; step += 1;
                     }
                     19 if ready => {
-                        text("printf 'IME_%s\\n' '", window, cx);
+                        text("printf 'IME_%s\\n' '", window, cx)?;
                         active.as_ref().unwrap().update(cx, |terminal, cx| {
                             terminal.replace_and_mark_text_in_range(None, "输入🙂", None, window, cx);
                         });
@@ -208,21 +220,21 @@ fn start_ui_smoke(window: AnyWindowHandle, report: std::path::PathBuf, cx: &mut 
                             terminal.replace_text_in_range(None, "输入🙂", window, cx);
                             Ok(())
                         })?;
-                        text("'", window, cx); key("enter", window, cx)?; step += 1;
+                        text("'", window, cx)?; key("enter", window, cx)?; step += 1;
                     }
                     21 if ready && active.as_ref().is_some_and(|view| view.read(cx).session.state.lock().unwrap().text().contains("IME_输入🙂")) => {
-                        text("vim -Nu NONE -n --noplugin -i NONE ui-buffer.txt", window, cx);
+                        text("vim -Nu NONE -n --noplugin -i NONE ui-buffer.txt", window, cx)?;
                         key("enter", window, cx)?; step += 1;
                     }
                     22 if active.as_ref().is_some_and(|view| view.read(cx).session.state.lock().unwrap().term.mode().contains(alacritty_terminal::term::TermMode::ALT_SCREEN)) => {
-                        text("iWinShell 编辑验证", window, cx);
+                        text("iWinShell 编辑验证", window, cx)?;
                         key("escape", window, cx)?;
-                        text(":wq", window, cx); key("enter", window, cx)?; step += 1;
+                        text(":wq", window, cx)?; key("enter", window, cx)?; step += 1;
                     }
                     23 if ready => {
                         let cwd = root.read(cx).config.cwd();
                         anyhow::ensure!(std::fs::read_to_string(cwd.join("ui-buffer.txt"))?.trim() == "WinShell 编辑验证", "Full-screen editor did not save UTF-8 input");
-                        text("sleep 30", window, cx); key("enter", window, cx)?; step += 1;
+                        text("sleep 30", window, cx)?; key("enter", window, cx)?; step += 1;
                     }
                     24 if !ready => { key("ctrl-c", window, cx)?; step += 1; }
                     25 if ready => return Ok(true),
