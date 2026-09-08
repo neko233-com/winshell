@@ -1,0 +1,33 @@
+font_family = "Cascadia Mono"
+font_size = 15.0
+scrollback = 10000
+default_shell = "bash"
+suggestions = true
+sidebar = true
+
+# Optional; otherwise use bundled Bash, then Git for Windows.
+# bash_path = 'C:\Program Files\Git\bin\bash.exe'
+# working_directory = 'D:\Code'
+
+# Inherited Windows process environment + these global overrides.
+# Values are literal strings; do not put secrets in a shared config file.
+[env]
+EDITOR = "vim"
+LANG = "en_US.UTF-8"
+# MY_PROJECT_HOME = 'D:\Code'
+
+# You can add any executable shell with literal arguments (no command wrapper).
+# Per-shell env overrides take precedence over [env].
+# [[shells]]
+# id = "wsl-ubuntu"
+# name = "Ubuntu (WSL)"
+# program = 'C:\Windows\System32\wsl.exe'
+# args = ["--distribution", "Ubuntu", "--cd", "~"]
+# [shells.env]
+# WSLENV = "MY_PROJECT_HOME/p"
+
+# [[shells]]
+# id = "nushell"
+# name = "Nushell"
+# program = 'C:\Program Files\nu\bin\nu.exe'
+# args = []

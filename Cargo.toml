@@ -1,0 +1,27 @@
+[package]
+name = "winshell"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.88"
+description = "A modern, native Windows terminal built with Rust and GPUI"
+license = "Apache-2.0"
+repository = "https://github.com/neko233-com/winshell"
+
+[dependencies]
+anyhow = "1"
+alacritty_terminal = "0.26"
+portable-pty = "0.9"
+serde = { version = "1", features = ["derive"] }
+toml = "0.9"
+directories = "6"
+unicode-width = "0.2"
+gpui = { version = "=0.2.2", default-features = false, features = ["windows-manifest"] }
+
+[profile.dev]
+debug = 0
+
+[profile.release]
+lto = "thin"
+codegen-units = 1
+strip = true
+

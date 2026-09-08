@@ -1,0 +1,45 @@
+name: Windows CI
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  windows:
+    runs-on: windows-latest
+    timeout-minutes: 35
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@v2
+      - name: Formatting
+        run: cargo fmt --all -- --check
+      - name: Clippy
+        run: cargo clippy --all-targets --locked -- -D warnings
+      - name: Unit tests
+        run: cargo test --locked
+      - name: Build
+        run: cargo build --locked
+      - name: Real Bash session
+        run: .\target\debug\winshell.exe --smoke-test bash
+      - name: Real PowerShell session
+        run: .\target\debug\winshell.exe --smoke-test powershell
+      - name: Real CMD session
+        run: .\target\debug\winshell.exe --smoke-test cmd
+      - name: Release build
+        run: cargo build --release --locked
+      - name: Prepare standalone runtime and package
+        run: .\scripts\package.ps1 -SkipBuild
+      - name: Test bundled Bash
+        run: .\target\debug\winshell.exe --smoke-test bash
+      - uses: actions/upload-artifact@v4
+        with:
+          name: winshell-windows-x64
+          path: |
+            dist/*.zip
+            dist/*.sha256
+          if-no-files-found: error
+
