@@ -1,9 +1,13 @@
-#![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
+#![cfg_attr(target_os = "windows", windows_subsystem = "windows")]
 
 mod app;
 mod terminal_view;
 
 fn main() {
+    let args: Vec<String> = std::env::args().skip(1).collect();
+    if !args.is_empty() {
+        attach_parent_console();
+    }
     let (config, error) = match winshell::config::Config::load() {
         Ok(config) => (config, None),
         Err(error) => (
@@ -11,7 +15,6 @@ fn main() {
             Some(format!("{error:#}")),
         ),
     };
-    let args: Vec<String> = std::env::args().skip(1).collect();
     if !args.is_empty() {
         if let Err(error) = cli(&args, &config) {
             eprintln!("{error:#}");
@@ -21,6 +24,21 @@ fn main() {
     }
     app::run(config, error);
 }
+
+#[cfg(windows)]
+fn attach_parent_console() {
+    #[link(name = "kernel32")]
+    unsafe extern "system" {
+        fn AttachConsole(process_id: u32) -> i32;
+    }
+    // SAFETY: AttachConsole has no pointer arguments. ATTACH_PARENT_PROCESS
+    // attaches CLI invocations to an existing console; GUI launches skip it.
+    unsafe {
+        AttachConsole(u32::MAX);
+    }
+}
+#[cfg(not(windows))]
+fn attach_parent_console() {}
 
 fn cli(args: &[String], config: &winshell::config::Config) -> anyhow::Result<()> {
     match args[0].as_str() {

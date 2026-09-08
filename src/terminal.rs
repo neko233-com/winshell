@@ -459,8 +459,13 @@ impl Session {
         if self.size == size {
             return Ok(());
         }
-        // Resize the model before releasing ConPTY so new output uses new bounds.
-        let mut state = self.state.lock().unwrap_or_else(|p| p.into_inner());
+        // Never hold the model lock across synchronous ConPTY APIs: its output
+        // pipe must keep draining while ResizePseudoConsole runs.
+        self.state
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .term
+            .resize(size);
         self.master
             .as_ref()
             .context("Session is closed")?
@@ -470,7 +475,6 @@ impl Session {
                 pixel_width: 0,
                 pixel_height: 0,
             })?;
-        state.term.resize(size);
         self.size = size;
         self.dirty.store(true, Ordering::Release);
         Ok(())
