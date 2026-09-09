@@ -345,6 +345,10 @@ impl TerminalView {
     fn key_down(&mut self, event: &KeyDownEvent, _: &mut Window, cx: &mut Context<Self>) {
         let key = &event.keystroke;
         let modifiers = key.modifiers;
+        // iTerm-style tab shortcuts: never forward to the PTY; workspace actions own them.
+        if modifiers.control && !modifiers.alt && matches!(key.key.as_str(), "t" | "w") {
+            return;
+        }
         if self.search.is_some() {
             match key.key.as_str() {
                 "escape" => {

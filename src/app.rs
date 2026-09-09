@@ -34,6 +34,9 @@ pub fn run(
 ) {
     Application::new().run(move |cx| {
         cx.bind_keys([
+            // iTerm-style: single-modifier tab shortcuts win over PTY encoding.
+            KeyBinding::new("ctrl-t", NewTab, None),
+            KeyBinding::new("ctrl-w", CloseTab, None),
             KeyBinding::new("ctrl-shift-t", NewTab, None),
             KeyBinding::new("ctrl-shift-w", CloseTab, None),
             KeyBinding::new("ctrl-tab", NextTab, None),
@@ -710,6 +713,7 @@ impl Workspace {
             .shadow_lg()
             .flex()
             .flex_row()
+            .on_click(|_, _, cx| cx.stop_propagation())
             .child(
                 div()
                     .id("settings-nav")
@@ -1163,8 +1167,19 @@ impl Render for Workspace {
                 .child(status.as_ref().map(|s| format!("{}{}  ·  {}  ·  UTF-8  ·  {} px", s.2, if s.3 { format!(" / {}", language.t("Bundled")) } else { String::new() }, if cfg!(windows) { "ConPTY" } else { "PTY" }, self.config.font_size)).unwrap_or_default()))
             .when(self.launcher || self.settings, |view| view.child(
                 div().absolute().inset_0().flex().items_center().justify_center().bg(rgba(0x080b11bb))
+                    .id("modal-backdrop")
+                    .on_click(cx.listener(|workspace, _, window, cx| {
+                        workspace.launcher = false;
+                        workspace.settings = false;
+                        if !workspace.tabs.is_empty() {
+                            workspace.activate(workspace.active, window, cx);
+                        }
+                        cx.notify();
+                    }))
                     .when(self.launcher, |view| view.child(
                         div().w(px(420.)).p_4().rounded_lg().bg(theme.rgb(0x1b232e)).border_1().border_color(theme.rgb(0x3a4656)).shadow_lg().flex().flex_col().gap_1()
+                            .id("launcher-panel")
+                            .on_click(|_, _, cx| cx.stop_propagation())
                             .child(div().px_2().py_2().text_size(px(13.)).font_weight(FontWeight::SEMIBOLD).text_color(theme.rgb(0xdce5f0)).child(language.t("Open a new terminal")))
                             .children(self.profiles.iter().enumerate().map(|(index, profile)| {
                                 div().id(("launch", index)).px_3().py_2().rounded_sm().flex().flex_col().cursor_pointer().text_size(px(12.))
