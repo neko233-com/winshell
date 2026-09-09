@@ -17,6 +17,7 @@ actions!(
         NextTab,
         PreviousTab,
         ToggleSidebar,
+        ToggleInspector,
         Launcher,
         Settings,
         ZoomIn,
@@ -38,6 +39,7 @@ pub fn run(
             KeyBinding::new("ctrl-tab", NextTab, None),
             KeyBinding::new("ctrl-shift-tab", PreviousTab, None),
             KeyBinding::new("ctrl-shift-b", ToggleSidebar, None),
+            KeyBinding::new("ctrl-shift-i", ToggleInspector, None),
             KeyBinding::new("ctrl-shift-p", Launcher, None),
             KeyBinding::new("ctrl-,", Settings, None),
             KeyBinding::new("ctrl-=", ZoomIn, None),
@@ -178,7 +180,7 @@ fn start_ui_smoke(window: AnyWindowHandle, report: std::path::PathBuf, cx: &mut 
                     8 if root.read(cx).active == 0 => { key("ctrl-shift-b", window, cx)?; step += 1; }
                     9 if !root.read(cx).config.sidebar => { key("ctrl-,", window, cx)?; step += 1; }
                     10 if root.read(cx).settings => { key("escape", window, cx)?; key("ctrl-=", window, cx)?; step += 1; }
-                    11 if root.read(cx).config.font_size == 16. => { key("ctrl-shift-w", window, cx)?; step += 1; }
+                    11 if root.read(cx).config.font_size == 15. => { key("ctrl-shift-w", window, cx)?; step += 1; }
                     12 if root.read(cx).tabs.len() == 1 => { key("ctrl-shift-w", window, cx)?; step += 1; }
                     13 if root.read(cx).tabs.is_empty() => { key("ctrl-shift-t", window, cx)?; step += 1; }
                     14 if ready => {
@@ -263,6 +265,14 @@ struct Tab {
     id: usize,
     terminal: Entity<TerminalView>,
 }
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum SettingsPage {
+    Appearance,
+    Terminal,
+    About,
+}
+
 pub struct Workspace {
     config: Config,
     profiles: Vec<ShellProfile>,
@@ -272,6 +282,7 @@ pub struct Workspace {
     focus: FocusHandle,
     launcher: bool,
     settings: bool,
+    settings_page: SettingsPage,
     launcher_index: usize,
     error: Option<String>,
     metadata: String,
@@ -294,6 +305,7 @@ impl Workspace {
             focus: cx.focus_handle(),
             launcher: false,
             settings: false,
+            settings_page: SettingsPage::Appearance,
             launcher_index: 0,
             error: startup_error,
             metadata: String::new(),
@@ -426,26 +438,25 @@ impl Workspace {
         self.save();
         cx.notify();
     }
+    fn inspector(&mut self, _: &ToggleInspector, _: &mut Window, cx: &mut Context<Self>) {
+        self.config.inspector = !self.config.inspector;
+        self.save();
+        cx.notify();
+    }
     fn save(&mut self) {
         if let Err(error) = self.config.save() {
             self.error = Some(error.to_string());
         }
     }
     fn launcher(&mut self, _: &Launcher, window: &mut Window, cx: &mut Context<Self>) {
-        self.launcher = !self.launcher;
-        self.settings = false;
-        self.launcher_index = 0;
-        if self.launcher {
-            window.focus(&self.focus);
-        } else {
-            self.activate(self.active, window, cx);
-        }
-        cx.notify();
+        // Single-shell product: launcher just opens another Bash tab.
+        self.new_tab(&NewTab, window, cx);
     }
     fn settings(&mut self, _: &Settings, window: &mut Window, cx: &mut Context<Self>) {
         self.settings = !self.settings;
         self.launcher = false;
         if self.settings {
+            self.settings_page = SettingsPage::Appearance;
             window.focus(&self.focus);
         } else {
             self.activate(self.active, window, cx);
@@ -469,8 +480,12 @@ impl Workspace {
     fn zoom_out(&mut self, _: &ZoomOut, _: &mut Window, cx: &mut Context<Self>) {
         self.zoom(-1., cx);
     }
+    fn reset_font_size(&mut self, cx: &mut Context<Self>) {
+        let delta = Config::default().font_size - self.config.font_size;
+        self.zoom(delta, cx);
+    }
     fn reset_zoom(&mut self, _: &ResetZoom, _: &mut Window, cx: &mut Context<Self>) {
-        self.zoom(15. - self.config.font_size, cx);
+        self.reset_font_size(cx);
     }
     fn reload(&mut self, _: &ReloadConfig, _: &mut Window, cx: &mut Context<Self>) {
         match Config::load() {
@@ -539,9 +554,9 @@ impl Workspace {
         let theme = Theme::resolve(&self.config);
         div()
             .id(id)
-            .px_3()
-            .py_2()
-            .rounded_md()
+            .px_2()
+            .py_1()
+            .rounded_sm()
             .cursor_pointer()
             .text_size(px(12.))
             .text_color(theme.rgb(0xa8b3c4))
@@ -557,7 +572,7 @@ impl Workspace {
         let theme = Theme::resolve(&self.config);
         let language = Language::resolve(&self.config.language);
         div()
-            .w(px(208.))
+            .w(px(200.))
             .flex_shrink_0()
             .h_full()
             .flex()
@@ -565,23 +580,22 @@ impl Workspace {
             .bg(theme.rgb(0x161c24))
             .border_r_1()
             .border_color(theme.rgb(0x29313c))
-            .p_3()
-            .gap_2()
+            .p_2()
+            .gap_1()
             .child(
                 div()
                     .px_2()
-                    .pt_4()
-                    .pb_2()
+                    .py_2()
                     .text_size(px(10.))
-                    .text_color(theme.rgb(0x748095))
+                    .text_color(theme.rgb(0x6b7a90))
                     .child(language.t("Workspace")),
             )
             .child(
                 div()
                     .px_2()
-                    .pb_3()
-                    .text_size(px(14.))
-                    .font_weight(FontWeight::SEMIBOLD)
+                    .pb_2()
+                    .text_size(px(13.))
+                    .font_weight(FontWeight::MEDIUM)
                     .text_color(theme.rgb(0xdce5f0))
                     .child(
                         self.config
@@ -593,12 +607,12 @@ impl Workspace {
             )
             .child(
                 div()
-                    .px_2()
-                    .py_2()
                     .flex()
                     .justify_between()
+                    .px_2()
+                    .py_1()
                     .text_size(px(11.))
-                    .text_color(theme.rgb(0x8896aa))
+                    .text_color(theme.rgb(0x7a8a9e))
                     .child(language.t("Sessions"))
                     .child(self.tabs.len().to_string()),
             )
@@ -608,19 +622,21 @@ impl Workspace {
                     .flex()
                     .flex_col()
                     .gap_1()
-                    .max_h(px(280.))
+                    .max_h(px(320.))
                     .overflow_y_scroll()
                     .children(self.tabs.iter().enumerate().map(|(index, tab)| {
                         let terminal = tab.terminal.read(cx);
                         let closed = terminal.session.state.lock().unwrap().closed;
                         div()
                             .id(("session", tab.id))
-                            .p_2()
-                            .rounded_md()
+                            .px_2()
+                            .py_1()
+                            .rounded_sm()
                             .flex()
                             .items_center()
                             .gap_2()
                             .cursor_pointer()
+                            .text_size(px(12.))
                             .bg(theme.rgb(if index == self.active {
                                 0x233631
                             } else {
@@ -629,14 +645,15 @@ impl Workspace {
                             .hover(|style| style.bg(theme.rgb(0x25312f)))
                             .child(
                                 div()
+                                    .text_size(px(11.))
                                     .text_color(theme.rgb(if closed { 0x657387 } else { ACCENT }))
-                                    .child("›_"),
+                                    .child("›"),
                             )
                             .child(
                                 div()
                                     .min_w_0()
-                                    .text_size(px(12.))
                                     .truncate()
+                                    .text_color(theme.rgb(0xc5d0de))
                                     .child(terminal.label()),
                             )
                             .on_click(cx.listener(move |workspace, _, window, cx| {
@@ -644,49 +661,21 @@ impl Workspace {
                             }))
                     })),
             )
-            .child(
-                div()
-                    .px_2()
-                    .pt_5()
-                    .pb_2()
-                    .text_size(px(10.))
-                    .text_color(theme.rgb(0x748095))
-                    .child(language.t("Shells")),
-            )
-            .children(self.profiles.iter().enumerate().map(|(index, profile)| {
-                div()
-                    .id(("profile", index))
-                    .px_2()
-                    .py_2()
-                    .rounded_md()
-                    .flex()
-                    .items_center()
-                    .justify_between()
-                    .cursor_pointer()
-                    .text_size(px(12.))
-                    .text_color(theme.rgb(0xa8b3c4))
-                    .hover(|style| style.bg(theme.rgb(0x222c38)))
-                    .child(profile.name.clone())
-                    .child(div().text_color(theme.rgb(0x657387)).child("+"))
-                    .on_click(cx.listener(move |workspace, _, window, cx| {
-                        workspace.open_profile(index, window, cx)
-                    }))
-            }))
             .child(div().flex_1())
             .child(
                 div()
                     .px_2()
-                    .py_3()
+                    .py_2()
                     .border_t_1()
                     .border_color(theme.rgb(0x29313c))
-                    .text_size(px(11.))
-                    .text_color(theme.rgb(0x748095))
+                    .text_size(px(10.))
+                    .text_color(theme.rgb(0x5d6c80))
                     .child(language.t("One workspace. Every shell.")),
             )
             .child(
                 self.button(
                     "settings-side",
-                    format!("{}    Ctrl + ,", language.t("Settings")),
+                    format!("⚙  {}", language.t("Settings")),
                 )
                 .on_click(
                     cx.listener(|workspace, _, window, cx| {
@@ -699,219 +688,339 @@ impl Workspace {
     fn render_settings(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let theme = Theme::resolve(&self.config);
         let language = Language::resolve(&self.config.language);
+        let page = self.settings_page;
+        let pages = [
+            (
+                SettingsPage::Appearance,
+                "Appearance",
+                language.t("Appearance"),
+            ),
+            (SettingsPage::Terminal, "Terminal", language.t("Terminal")),
+            (SettingsPage::About, "About", language.t("About")),
+        ];
         div()
             .id("settings-panel")
-            .w(px(600.))
-            .max_h(px(620.))
-            .overflow_y_scroll()
-            .p_6()
-            .rounded_xl()
+            .w(px(720.))
+            .h(px(480.))
+            .rounded_lg()
+            .overflow_hidden()
             .bg(theme.rgb(0x1b232e))
             .border_1()
             .border_color(theme.rgb(0x3a4656))
             .shadow_lg()
             .flex()
-            .flex_col()
-            .gap_4()
+            .flex_row()
             .child(
                 div()
-                    .text_xl()
-                    .font_weight(FontWeight::SEMIBOLD)
-                    .child(language.t("Make it yours")),
-            )
-            .child(
-                div()
-                    .text_sm()
-                    .text_color(theme.rgb(0x8e9cb0))
-                    .child(language.t("Settings help")),
-            )
-            .child(
-                div()
+                    .id("settings-nav")
+                    .w(px(168.))
+                    .h_full()
                     .flex()
                     .flex_col()
-                    .gap_2()
-                    .child(language.t("Language"))
-                    .child(div().flex().flex_wrap().gap_1().children(
-                        LANGUAGES.iter().enumerate().map(|(index, &(id, label))| {
-                            div()
-                                .id(("language", index))
-                                .px_3()
-                                .py_2()
-                                .rounded_md()
-                                .cursor_pointer()
-                                .text_size(px(12.))
-                                .bg(gpui::rgb(if self.config.language == id {
-                                    theme.selected
-                                } else {
-                                    theme.panel
-                                }))
-                                .text_color(gpui::rgb(if self.config.language == id {
-                                    theme.accent
-                                } else {
-                                    theme.foreground
-                                }))
-                                .child(language.t(label))
-                                .on_click(cx.listener(move |workspace, _, _, cx| {
-                                    workspace.config.language = id.into();
-                                    workspace.apply_appearance(cx);
-                                    workspace.save();
-                                }))
-                        }),
-                    )),
-            )
-            .child(
-                div()
-                    .flex()
-                    .flex_col()
-                    .gap_2()
-                    .child(language.t("Theme"))
-                    .child(div().flex().flex_wrap().gap_2().children(
-                        THEMES.iter().enumerate().map(|(index, &(id, label))| {
-                            let sample = Theme::resolve(&Config {
-                                theme: id.into(),
-                                ..self.config.clone()
-                            });
-                            div()
-                                .id(("theme", index))
-                                .px_3()
-                                .py_2()
-                                .rounded_md()
-                                .cursor_pointer()
-                                .flex()
-                                .items_center()
-                                .gap_2()
-                                .border_1()
-                                .border_color(gpui::rgb(if self.config.theme == id {
-                                    theme.accent
-                                } else {
-                                    theme.border
-                                }))
-                                .child(
-                                    div()
-                                        .size(px(14.))
-                                        .rounded_full()
-                                        .bg(gpui::rgb(sample.background))
-                                        .border_2()
-                                        .border_color(gpui::rgb(sample.accent)),
-                                )
-                                .child(language.t(label))
-                                .on_click(cx.listener(move |workspace, _, _, cx| {
-                                    workspace.config.theme = id.into();
-                                    workspace.apply_appearance(cx);
-                                    workspace.save();
-                                }))
-                        }),
-                    )),
-            )
-            .child(
-                div()
-                    .flex()
-                    .items_center()
-                    .justify_between()
-                    .child(format!(
-                        "{} · {} px",
-                        language.t("Terminal font"),
-                        self.config.font_size
-                    ))
+                    .gap_1()
+                    .p_3()
+                    .bg(theme.rgb(0x161c24))
+                    .border_r_1()
+                    .border_color(theme.rgb(0x29313c))
                     .child(
                         div()
-                            .flex()
-                            .gap_2()
-                            .child(self.button("font-minus", "−").on_click(
-                                cx.listener(|workspace, _, _, cx| workspace.zoom(-1., cx)),
-                            ))
-                            .child(self.button("font-plus", "+").on_click(
-                                cx.listener(|workspace, _, _, cx| workspace.zoom(1., cx)),
-                            )),
-                    ),
-            )
-            .child(
-                self.button(
-                    "toggle-hints",
-                    format!(
-                        "{}    {}",
-                        language.t("Command suggestions"),
-                        language.t(if self.config.suggestions { "On" } else { "Off" })
-                    ),
-                )
-                .on_click(cx.listener(|workspace, _, _, cx| {
-                    workspace.config.suggestions = !workspace.config.suggestions;
-                    for tab in &workspace.tabs {
-                        tab.terminal.update(cx, |view, cx| {
-                            view.suggestions_enabled = workspace.config.suggestions;
-                            view.hints.clear();
-                            cx.notify();
-                        });
-                    }
-                    workspace.save();
-                    cx.notify();
-                })),
-            )
-            .child(
-                div()
-                    .text_sm()
-                    .text_color(theme.rgb(0x8e9cb0))
-                    .child(format!(
-                        "{}: {} + {} {}",
-                        language.t("Environment"),
-                        language.t("Inherited"),
-                        self.config.env.len(),
-                        language.t("Global overrides")
-                    )),
-            )
-            .child(
-                div()
-                    .p_3()
-                    .rounded_md()
-                    .bg(theme.rgb(BACKGROUND))
-                    .text_size(px(11.))
-                    .text_color(theme.rgb(0x96b7ab))
-                    .child(
-                        config::directory()
-                            .join("config.toml")
-                            .display()
-                            .to_string(),
-                    ),
-            )
-            .child(
-                div()
-                    .flex()
-                    .gap_2()
-                    .child(
-                        self.button("edit-config", language.t("Edit config.toml"))
-                            .on_click(cx.listener(|workspace, _, _, cx| {
-                                if !config::directory().join("config.toml").exists() {
-                                    workspace.save();
-                                }
-                                let mut editor = std::process::Command::new(if cfg!(windows) {
-                                    "notepad.exe"
-                                } else {
-                                    "/usr/bin/open"
-                                });
-                                if cfg!(target_os = "macos") {
-                                    editor.arg("-t");
-                                }
-                                if let Err(error) =
-                                    editor.arg(config::directory().join("config.toml")).spawn()
-                                {
-                                    workspace.error = Some(error.to_string());
-                                }
-                                cx.notify();
-                            })),
+                            .px_2()
+                            .py_2()
+                            .mb_2()
+                            .text_size(px(11.))
+                            .font_weight(FontWeight::SEMIBOLD)
+                            .text_color(theme.rgb(0xdce5f0))
+                            .child(language.t("Settings")),
                     )
-                    .child(
-                        self.button("reload-config", language.t("Reload configuration"))
-                            .on_click(cx.listener(|workspace, _, window, cx| {
-                                workspace.reload(&ReloadConfig, window, cx)
-                            })),
-                    ),
+                    .children(pages.iter().map(|(id, key, label)| {
+                        let page_id = *id;
+                        let active = page == page_id;
+                        div()
+                            .id(*key)
+                            .px_2()
+                            .py_2()
+                            .rounded_sm()
+                            .cursor_pointer()
+                            .text_size(px(12.))
+                            .text_color(theme.rgb(if active {
+                                0xf1f5fb
+                            } else {
+                                0x9aa8bc
+                            }))
+                            .bg(theme.rgb(if active {
+                                0x2a413b
+                            } else {
+                                0x161c24
+                            }))
+                            .hover(|style| style.bg(theme.rgb(0x222c38)))
+                            .child(*label)
+                            .on_click(cx.listener(move |workspace, _, _, cx| {
+                                workspace.settings_page = page_id;
+                                cx.notify();
+                            }))
+                    })),
             )
             .child(
                 div()
-                    .text_xs()
-                    .text_color(theme.rgb(0x748095))
-                    .child(language.t("Settings shortcuts")),
+                    .id("settings-content")
+                    .flex_1()
+                    .h_full()
+                    .flex()
+                    .flex_col()
+                    .p_6()
+                    .gap_4()
+                    .overflow_y_scroll()
+                    .when(page == SettingsPage::Appearance, |view| {
+                        view.child(
+                            div()
+                                .text_sm()
+                                .text_color(theme.rgb(0x8e9cb0))
+                                .child(language.t("Settings help")),
+                        )
+                        .child(Self::setting_row(
+                            language.t("Language").into(),
+                            div().flex().flex_wrap().gap_1().children(
+                                LANGUAGES.iter().enumerate().map(|(index, &(id, label))| {
+                                    div()
+                                        .id(("language", index))
+                                        .px_2()
+                                        .py_1()
+                                        .rounded_sm()
+                                        .cursor_pointer()
+                                        .text_size(px(12.))
+                                        .bg(gpui::rgb(if self.config.language == id {
+                                            theme.selected
+                                        } else {
+                                            theme.raised
+                                        }))
+                                        .text_color(gpui::rgb(if self.config.language == id {
+                                            theme.accent
+                                        } else {
+                                            theme.foreground
+                                        }))
+                                        .child(language.t(label))
+                                        .on_click(cx.listener(move |workspace, _, _, cx| {
+                                            workspace.config.language = id.into();
+                                            workspace.apply_appearance(cx);
+                                            workspace.save();
+                                        }))
+                                }),
+                            ),
+                            theme,
+                        ))
+                        .child(Self::setting_row(
+                            language.t("Theme").into(),
+                            div().flex().flex_wrap().gap_2().children(
+                                THEMES.iter().enumerate().map(|(index, &(id, label))| {
+                                    let sample = Theme::resolve(&Config {
+                                        theme: id.into(),
+                                        ..self.config.clone()
+                                    });
+                                    div()
+                                        .id(("theme", index))
+                                        .px_2()
+                                        .py_1()
+                                        .rounded_sm()
+                                        .cursor_pointer()
+                                        .flex()
+                                        .items_center()
+                                        .gap_2()
+                                        .text_size(px(12.))
+                                        .border_1()
+                                        .border_color(gpui::rgb(if self.config.theme == id {
+                                            theme.accent
+                                        } else {
+                                            theme.border
+                                        }))
+                                        .child(
+                                            div()
+                                                .size(px(10.))
+                                                .rounded_full()
+                                                .bg(gpui::rgb(sample.background))
+                                                .border_1()
+                                                .border_color(gpui::rgb(sample.accent)),
+                                        )
+                                        .child(language.t(label))
+                                        .on_click(cx.listener(move |workspace, _, _, cx| {
+                                            workspace.config.theme = id.into();
+                                            workspace.apply_appearance(cx);
+                                            workspace.save();
+                                        }))
+                                }),
+                            ),
+                            theme,
+                        ))
+                    })
+                    .when(page == SettingsPage::Terminal, |view| {
+                        view.child(Self::setting_row(
+                            format!(
+                                "{} · {} · {} px",
+                                language.t("Terminal font"),
+                                self.config.font_family,
+                                self.config.font_size
+                            )
+                            .into(),
+                            div().flex().gap_2()
+                                .child(self.button("font-minus", "−").on_click(
+                                    cx.listener(|workspace, _, _, cx| workspace.zoom(-1., cx)),
+                                ))
+                                .child(self.button("font-plus", "+").on_click(
+                                    cx.listener(|workspace, _, _, cx| workspace.zoom(1., cx)),
+                                ))
+                                .child(
+                                    self.button("font-reset", language.t("Reset default"))
+                                        .on_click(cx.listener(|workspace, _, _, cx| {
+                                            workspace.reset_font_size(cx);
+                                        })),
+                                ),
+                            theme,
+                        ))
+                        .child(Self::setting_row(
+                            format!(
+                                "{} · {}",
+                                language.t("Command suggestions"),
+                                language.t(if self.config.suggestions {
+                                    "On"
+                                } else {
+                                    "Off"
+                                }),
+                            )
+                            .into(),
+                            div().child(
+                                self.button("toggle-hints", language.t(if self.config.suggestions {
+                                    "On"
+                                } else {
+                                    "Off"
+                                }))
+                                .on_click(cx.listener(|workspace, _, _, cx| {
+                                    workspace.config.suggestions = !workspace.config.suggestions;
+                                    for tab in &workspace.tabs {
+                                        tab.terminal.update(cx, |view, cx| {
+                                            view.suggestions_enabled = workspace.config.suggestions;
+                                            view.hints.clear();
+                                            cx.notify();
+                                        });
+                                    }
+                                    workspace.save();
+                                    cx.notify();
+                                })),
+                            ),
+                            theme,
+                        ))
+                        .child(Self::setting_row(
+                            format!(
+                                "{} · {}",
+                                language.t("History inspector"),
+                                language.t(if self.config.inspector {
+                                    "On"
+                                } else {
+                                    "Off"
+                                }),
+                            )
+                            .into(),
+                            div().child(
+                                self.button("toggle-inspector", language.t(if self.config.inspector {
+                                    "On"
+                                } else {
+                                    "Off"
+                                }))
+                                .on_click(cx.listener(|workspace, _, window, cx| {
+                                    workspace.inspector(&ToggleInspector, window, cx)
+                                })),
+                            ),
+                            theme,
+                        ))
+                    })
+                    .when(page == SettingsPage::About, |view| {
+                        view.child(
+                            div()
+                                .text_sm()
+                                .text_color(theme.rgb(0x8e9cb0))
+                                .child(format!(
+                                    "{}: {} + {} {}",
+                                    language.t("Environment"),
+                                    language.t("Inherited"),
+                                    self.config.env.len(),
+                                    language.t("Global overrides")
+                                )),
+                        )
+                        .child(
+                            div()
+                                .p_3()
+                                .rounded_md()
+                                .bg(theme.rgb(BACKGROUND))
+                                .text_size(px(11.))
+                                .text_color(theme.rgb(0x96b7ab))
+                                .child(
+                                    config::directory()
+                                        .join("config.toml")
+                                        .display()
+                                        .to_string(),
+                                ),
+                        )
+                        .child(div().flex().gap_2().child(
+                            self.button("edit-config", language.t("Edit config.toml")).on_click(
+                                cx.listener(|workspace, _, _, cx| {
+                                    if !config::directory().join("config.toml").exists() {
+                                        workspace.save();
+                                    }
+                                    let mut editor = std::process::Command::new(if cfg!(windows) {
+                                        "notepad.exe"
+                                    } else {
+                                        "/usr/bin/open"
+                                    });
+                                    if cfg!(target_os = "macos") {
+                                        editor.arg("-t");
+                                    }
+                                    if let Err(error) = editor
+                                        .arg(config::directory().join("config.toml"))
+                                        .spawn()
+                                    {
+                                        workspace.error = Some(error.to_string());
+                                    }
+                                    cx.notify();
+                                }),
+                            ),
+                        )).child(
+                            self.button("reload-config", language.t("Reload configuration"))
+                                .on_click(cx.listener(|workspace, _, window, cx| {
+                                    workspace.reload(&ReloadConfig, window, cx)
+                                })),
+                        )
+                        .child(div().text_2xl().mt_4().child(concat!(
+                            "WinShell ",
+                            env!("CARGO_PKG_VERSION")
+                        )))
+                        .child(
+                            div()
+                                .text_sm()
+                                .text_color(theme.rgb(0x7a8a9e))
+                                .child(language.t("Settings shortcuts")),
+                        )
+                    }),
             )
+    }
+
+    fn setting_row(
+        label: SharedString,
+        control: impl IntoElement,
+        theme: Theme,
+    ) -> impl IntoElement {
+        div()
+            .flex()
+            .flex_col()
+            .gap_2()
+            .pb_4()
+            .border_b_1()
+            .border_color(theme.rgb(0x2a3340))
+            .child(
+                div()
+                    .text_size(px(13.))
+                    .font_weight(FontWeight::MEDIUM)
+                    .text_color(theme.rgb(0xdce5f0))
+                    .child(label),
+            )
+            .child(control.into_element())
     }
 }
 
@@ -937,61 +1046,133 @@ impl Render for Workspace {
                 state.last_exit,
             )
         });
+        let history = active.as_ref().map(|terminal| {
+            terminal.read(cx).history_entries(80)
+        });
         div().relative().size_full().flex().flex_col().bg(theme.rgb(BACKGROUND)).text_color(theme.rgb(FOREGROUND)).font_family(if cfg!(target_os = "macos") { ".AppleSystemUIFont" } else { "Segoe UI" }).text_size(px(13.))
             .track_focus(&self.focus).key_context("WinShell")
             .on_action(cx.listener(Self::new_tab)).on_action(cx.listener(Self::close_tab))
             .on_action(cx.listener(Self::next_tab)).on_action(cx.listener(Self::previous_tab))
-            .on_action(cx.listener(Self::sidebar)).on_action(cx.listener(Self::launcher)).on_action(cx.listener(Self::settings))
+            .on_action(cx.listener(Self::sidebar)).on_action(cx.listener(Self::inspector)).on_action(cx.listener(Self::launcher)).on_action(cx.listener(Self::settings))
             .on_action(cx.listener(Self::zoom_in)).on_action(cx.listener(Self::zoom_out)).on_action(cx.listener(Self::reset_zoom)).on_action(cx.listener(Self::reload))
             .on_key_down(cx.listener(Self::key_down))
-            .child(div().h(px(54.)).flex_shrink_0().px_4().flex().items_center().justify_between().bg(theme.rgb(0x19202a)).border_b_1().border_color(theme.rgb(0x29313c))
-                .child(div().flex().items_center().gap_3()
-                    .child(div().px_2().py_1().rounded_md().bg(theme.rgb(ACCENT)).text_color(theme.rgb(0x102720)).font_weight(FontWeight::BOLD).font_family("Consolas").child("›_"))
-                    .child(div().text_size(px(18.)).font_weight(FontWeight::SEMIBOLD).child("winshell"))
-                    .child(div().text_size(px(10.)).px_2().py_1().rounded_sm().bg(theme.rgb(0x2a3340)).text_color(theme.rgb(0x8f9db1)).child(concat!("v", env!("CARGO_PKG_VERSION")))))
-                .child(div().flex().gap_2()
+            .child(div().h(px(40.)).flex_shrink_0().px_3().flex().items_center().justify_between().bg(theme.rgb(0x19202a)).border_b_1().border_color(theme.rgb(0x29313c))
+                .child(div().flex().items_center().gap_2()
+                    .child(div().text_size(px(12.)).font_weight(FontWeight::SEMIBOLD).text_color(theme.rgb(0xdce5f0)).child("WinShell"))
+                    .child(div().text_size(px(10.)).px_1().py_1().rounded_sm().bg(theme.rgb(0x2a3340)).text_color(theme.rgb(0x7a8a9e)).child(concat!("v", env!("CARGO_PKG_VERSION")))))
+                .child(div().flex().gap_1()
                     .child(self.button("sidebar", language.t("Sidebar")).on_click(cx.listener(|workspace, _, window, cx| workspace.sidebar(&ToggleSidebar, window, cx))))
-                    .child(self.button("launcher", format!("{}   Ctrl + Shift + P", language.t("New terminal"))).on_click(cx.listener(|workspace, _, window, cx| workspace.launcher(&Launcher, window, cx))))))
+                    .child(self.button("inspector", language.t("History")).on_click(cx.listener(|workspace, _, window, cx| workspace.inspector(&ToggleInspector, window, cx))))
+                    .child(self.button("launcher", language.t("New terminal")).on_click(cx.listener(|workspace, _, window, cx| workspace.launcher(&Launcher, window, cx))))))
             .child(div().flex().flex_1().min_h_0()
                 .when(self.config.sidebar, |view| view.child(self.render_sidebar(cx)))
                 .child(div().flex().flex_col().flex_1().min_w_0().min_h_0()
-                    .child(div().h(px(45.)).flex_shrink_0().flex().items_center().bg(theme.rgb(0x131921)).border_b_1().border_color(theme.rgb(0x29313c))
+                    .child(div().h(px(36.)).flex_shrink_0().flex().items_center().bg(theme.rgb(0x131921)).border_b_1().border_color(theme.rgb(0x29313c))
                         .child(div().id("tabbar").flex().flex_1().min_w_0().h_full().overflow_x_scroll()
                             .children(self.tabs.iter().enumerate().map(|(index, tab)| {
-                                div().id(("tab", tab.id)).h_full().w(px(206.)).flex_shrink_0().px_3().flex().items_center().gap_2().cursor_pointer()
+                                div().id(("tab", tab.id)).h_full().w(px(180.)).flex_shrink_0().px_3().flex().items_center().gap_2().cursor_pointer()
                                     .border_b_2().border_color(theme.rgb(if index == self.active { ACCENT } else { 0x131921 }))
                                     .bg(theme.rgb(if index == self.active { BACKGROUND } else { 0x131921 }))
-                                    .child(div().text_color(theme.rgb(ACCENT)).child("›_"))
-                                    .child(div().flex_1().truncate().text_size(px(12.)).child(tab.terminal.read(cx).label()))
-                                    .child(div().id(("close", tab.id)).px_1().rounded_sm().hover(|style| style.bg(theme.rgb(0x3f3038))).text_color(theme.rgb(0x7d899b)).child("×")
+                                    .child(div().text_size(px(11.)).text_color(theme.rgb(if index == self.active { ACCENT } else { 0x6b7a90 })).child("›"))
+                                    .child(div().flex_1().truncate().text_size(px(12.)).text_color(theme.rgb(if index == self.active { 0xdce5f0 } else { 0x8a97ab })).child(tab.terminal.read(cx).label()))
+                                    .child(div().id(("close", tab.id)).px_1().rounded_sm().hover(|style| style.bg(theme.rgb(0x3f3038))).text_color(theme.rgb(0x6b7a90)).child("×")
                                         .on_click(cx.listener(move |workspace, _, window, cx| { cx.stop_propagation(); workspace.close(index, window, cx); })))
                                     .on_click(cx.listener(move |workspace, _, window, cx| workspace.activate(index, window, cx)))
                             })))
                         .child(self.button("new-tab", "+").on_click(cx.listener(|workspace, _, window, cx| workspace.new_tab(&NewTab, window, cx)))))
-                    .when_some(active, |view, terminal| view.child(terminal))
-                    .when(self.tabs.is_empty(), |view| view.child(div().size_full().flex().flex_col().items_center().justify_center().gap_4()
-                        .child(div().text_3xl().text_color(theme.rgb(ACCENT)).child(language.t("Your next command starts here.")))
-                        .child(div().text_color(theme.rgb(0x8290a5)).child(language.t("Empty help")))
-                        .child(self.button("start", format!("+ {}", language.t("New terminal"))).on_click(cx.listener(|workspace, _, window, cx| workspace.launcher(&Launcher, window, cx))))))))
-            .when_some(self.error.clone(), |view, error| view.child(div().px_4().py_2().flex().justify_between().bg(theme.rgb(0x3d2830)).text_color(theme.rgb(0xffb5c0))
-                .child(error).child(self.button("dismiss", language.t("Dismiss")).on_click(cx.listener(|workspace, _, _, cx| { workspace.error = None; cx.notify(); })))))
-            .child(div().h(px(30.)).flex_shrink_0().px_4().flex().items_center().justify_between().border_t_1().border_color(theme.rgb(0x29313c)).bg(theme.rgb(0x161d25)).text_size(px(10.)).text_color(theme.rgb(0x8190a4))
+                    .child(div().flex().flex_1().min_h_0()
+                        .when_some(active, |view, terminal| view.child(terminal))
+                        .when(self.tabs.is_empty(), |view| view.child(div().size_full().flex().flex_col().items_center().justify_center().gap_4()
+                            .child(div().text_2xl().text_color(theme.rgb(ACCENT)).child(language.t("Your next command starts here.")))
+                            .child(div().text_color(theme.rgb(0x6b7a90)).child(language.t("Empty help")))
+                            .child(self.button("start", format!("+ {}", language.t("New terminal"))).on_click(cx.listener(|workspace, _, window, cx| workspace.launcher(&Launcher, window, cx))))))
+                        .when(self.config.inspector && history.is_some(), |view| {
+                            let entries = history.clone().unwrap_or_default();
+                            view.child(
+                                div()
+                                    .id("inspector")
+                                    .w(px(260.))
+                                    .h_full()
+                                    .flex_shrink_0()
+                                    .flex()
+                                    .flex_col()
+                                    .bg(theme.rgb(0x161c24))
+                                    .border_l_1()
+                                    .border_color(theme.rgb(0x29313c))
+                                    .child(
+                                        div()
+                                            .px_3()
+                                            .py_2()
+                                            .text_size(px(10.))
+                                            .text_color(theme.rgb(0x6b7a90))
+                                            .border_b_1()
+                                            .border_color(theme.rgb(0x29313c))
+                                            .child(language.t("History")),
+                                    )
+                                    .child(
+                                        div()
+                                            .id("history-list")
+                                            .flex()
+                                            .flex_col()
+                                            .py_1()
+                                            .overflow_y_scroll()
+                                            .children(entries.iter().enumerate().rev().map(|(index, command)| {
+                                                let (head, rest) = match command.split_once(char::is_whitespace) {
+                                                    Some((h, r)) => (h.to_string(), r.to_string()),
+                                                    None => (command.clone(), String::new()),
+                                                };
+                                                div()
+                                                    .id(("history", index))
+                                                    .px_3()
+                                                    .py_1()
+                                                    .text_size(px(11.))
+                                                    .font_family(self.config.font_family.clone())
+                                                    .flex()
+                                                    .gap_1()
+                                                    .cursor_pointer()
+                                                    .hover(|style| style.bg(theme.rgb(0x222c38)))
+                                                    .child(div().text_color(theme.rgb(ACCENT)).child(head))
+                                                    .when(!rest.is_empty(), |view| {
+                                                        view.child(div().min_w_0().truncate().text_color(theme.rgb(0x9aa8bc)).child(rest))
+                                                    })
+                                                    .on_click(cx.listener({
+                                                        let command = command.clone();
+                                                        move |workspace, _, window, cx| {
+                                                            let Some(tab) = workspace.tabs.get(workspace.active) else {
+                                                                return;
+                                                            };
+                                                            let text = command.clone();
+                                                            tab.terminal.update(cx, |terminal, _| {
+                                                                terminal.paste_command_for_inspector(&text);
+                                                            });
+                                                            workspace.activate(workspace.active, window, cx);
+                                                        }
+                                                    }))
+                                            })),
+                                    ),
+                            )
+                        })
+                    ))
+            )
+            .when_some(self.error.clone(), |view, error| view.child(div().px_3().py_2().flex().justify_between().items_center().bg(theme.rgb(0x3d2830)).text_color(theme.rgb(0xffb5c0)).text_size(px(12.))
+                .child(div().truncate().child(error)).child(self.button("dismiss", language.t("Dismiss")).on_click(cx.listener(|workspace, _, _, cx| { workspace.error = None; cx.notify(); })))))
+            .child(div().h(px(24.)).flex_shrink_0().px_3().flex().items_center().justify_between().border_t_1().border_color(theme.rgb(0x29313c)).bg(theme.rgb(0x161d25)).text_size(px(10.)).text_color(theme.rgb(0x6b7a90))
                 .child(div().flex().items_center().gap_3().min_w_0()
                     .child(div().text_color(theme.rgb(ACCENT)).child(status.as_ref().map(|s| format!("● {}", s.1)).unwrap_or_else(|| "● WinShell".into())))
                     .child(div().truncate().child(status.as_ref().map(|s| s.0.clone()).unwrap_or_default())))
                 .child(status.as_ref().map(|s| format!("{}{}  ·  {}  ·  UTF-8  ·  {} px", s.2, if s.3 { format!(" / {}", language.t("Bundled")) } else { String::new() }, if cfg!(windows) { "ConPTY" } else { "PTY" }, self.config.font_size)).unwrap_or_default()))
             .when(self.launcher || self.settings, |view| view.child(
-                div().absolute().inset_0().flex().items_start().justify_center().pt(px(50.)).bg(rgba(0x080b11bb))
+                div().absolute().inset_0().flex().items_center().justify_center().bg(rgba(0x080b11bb))
                     .when(self.launcher, |view| view.child(
-                        div().w(px(500.)).p_4().rounded_xl().bg(theme.rgb(0x1b232e)).border_1().border_color(theme.rgb(0x3a4656)).shadow_lg().flex().flex_col().gap_2()
-                            .child(div().px_2().py_3().text_lg().font_weight(FontWeight::SEMIBOLD).child(language.t("Open a new terminal")))
+                        div().w(px(420.)).p_4().rounded_lg().bg(theme.rgb(0x1b232e)).border_1().border_color(theme.rgb(0x3a4656)).shadow_lg().flex().flex_col().gap_1()
+                            .child(div().px_2().py_2().text_size(px(13.)).font_weight(FontWeight::SEMIBOLD).text_color(theme.rgb(0xdce5f0)).child(language.t("Open a new terminal")))
                             .children(self.profiles.iter().enumerate().map(|(index, profile)| {
-                                div().id(("launch", index)).p_3().rounded_md().flex().flex_col().gap_1().cursor_pointer()
+                                div().id(("launch", index)).px_3().py_2().rounded_sm().flex().flex_col().cursor_pointer().text_size(px(12.))
                                     .bg(theme.rgb(if index == self.launcher_index { 0x2a413b } else { 0x1b232e })).hover(|style| style.bg(theme.rgb(0x2a413b)))
-                                    .child(profile.name.clone()).child(div().text_xs().text_color(theme.rgb(0x849d94)).truncate().child(profile.program.display().to_string()))
+                                    .child(profile.name.clone()).child(div().text_size(px(10.)).text_color(theme.rgb(0x7a8a9e)).truncate().child(profile.program.display().to_string()))
                                     .on_click(cx.listener(move |workspace, _, window, cx| workspace.open_profile(index, window, cx)))
                             }))
-                            .child(div().px_2().pt_3().text_xs().text_color(theme.rgb(0x748095)).child(language.t("Launcher shortcuts")))
+                            .child(div().px_2().pt_2().text_size(px(10.)).text_color(theme.rgb(0x5d6c80)).child(language.t("Launcher shortcuts")))
                     ))
                     .when(self.settings, |view| view.child(self.render_settings(cx)))
             ))

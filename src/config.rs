@@ -37,6 +37,7 @@ pub struct Config {
     pub working_directory: Option<PathBuf>,
     pub suggestions: bool,
     pub sidebar: bool,
+    pub inspector: bool,
     pub env: BTreeMap<String, String>,
     pub shells: Vec<CustomShell>,
 }
@@ -47,19 +48,15 @@ impl Default for Config {
             language: "system".into(),
             theme: "midnight".into(),
             custom_theme: Default::default(),
-            font_family: if cfg!(target_os = "macos") {
-                "Menlo"
-            } else {
-                "Cascadia Mono"
-            }
-            .into(),
-            font_size: 15.,
+            font_family: "JetBrains Mono".into(),
+            font_size: 14.,
             scrollback: 10_000,
             default_shell: "bash".into(),
             bash_path: None,
             working_directory: None,
             suggestions: true,
             sidebar: true,
+            inspector: true,
             env: BTreeMap::new(),
             shells: Vec::new(),
         }

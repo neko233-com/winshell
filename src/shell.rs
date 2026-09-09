@@ -14,97 +14,16 @@ pub struct ShellProfile {
     pub env: BTreeMap<String, String>,
 }
 
+/// Bash only. Custom profiles in config.toml are optional extras.
 pub fn discover(config: &Config) -> Vec<ShellProfile> {
     let mut profiles = Vec::new();
-    let executable_dir = std::env::current_exe()
-        .ok()
-        .and_then(|p| p.parent().map(Path::to_path_buf));
-    let mut candidates = Vec::new();
-    if let Some(path) = &config.bash_path {
-        candidates.push((path.clone(), false));
-    }
-    if let Some(path) = std::env::var_os("WINSHELL_BASH") {
-        candidates.push((path.into(), false));
-    }
-    #[cfg(unix)]
-    for path in ["/opt/homebrew/bin/bash", "/usr/local/bin/bash", "/bin/bash"] {
-        candidates.push((PathBuf::from(path), false));
-    }
-    if let Some(dir) = &executable_dir {
-        candidates.push((dir.join("runtime/git/bin/bash.exe"), true));
-        // Development builds can use the runtime downloaded into the project root.
-        if let Some(root) = dir.parent().and_then(Path::parent) {
-            candidates.push((root.join("runtime/git/bin/bash.exe"), true));
-        }
-    }
-    for variable in [
-        "ProgramW6432",
-        "ProgramFiles",
-        "ProgramFiles(x86)",
-        "LOCALAPPDATA",
-    ] {
-        if let Some(dir) = std::env::var_os(variable) {
-            candidates.push((PathBuf::from(&dir).join("Git/bin/bash.exe"), false));
-            candidates.push((PathBuf::from(dir).join("Programs/Git/bin/bash.exe"), false));
-        }
-    }
-    if let Some(path) =
-        find_on_path("git.exe").and_then(|p| p.parent()?.parent().map(|p| p.join("bin/bash.exe")))
-    {
-        candidates.push((path, false));
-    }
-    if let Some((program, bundled)) = candidates.into_iter().find(|(path, _)| path.is_file()) {
+    if let Some((program, bundled)) = find_bash(config) {
         profiles.push(ShellProfile {
             id: "bash".into(),
             name: "Bash".into(),
             program,
             args: vec![],
             bundled,
-            env: config.env.clone(),
-        });
-    }
-    #[cfg(unix)]
-    for (id, name, program) in [("zsh", "Zsh", "/bin/zsh"), ("sh", "POSIX sh", "/bin/sh")] {
-        if Path::new(program).is_file() {
-            profiles.push(ShellProfile {
-                id: id.into(),
-                name: name.into(),
-                program: program.into(),
-                args: vec!["-l".into()],
-                bundled: false,
-                env: config.env.clone(),
-            });
-        }
-    }
-    if let Some(program) = find_on_path(if cfg!(windows) { "pwsh.exe" } else { "pwsh" }) {
-        profiles.push(ShellProfile {
-            id: "pwsh".into(),
-            name: "PowerShell 7".into(),
-            program,
-            args: vec!["-NoLogo".into()],
-            bundled: false,
-            env: config.env.clone(),
-        });
-    }
-    if let Some(root) = std::env::var_os("SystemRoot") {
-        let system = PathBuf::from(root).join("System32");
-        let powershell = system.join("WindowsPowerShell/v1.0/powershell.exe");
-        if powershell.is_file() {
-            profiles.push(ShellProfile {
-                id: "powershell".into(),
-                name: "PowerShell".into(),
-                program: powershell,
-                args: vec!["-NoLogo".into()],
-                bundled: false,
-                env: config.env.clone(),
-            });
-        }
-        profiles.push(ShellProfile {
-            id: "cmd".into(),
-            name: "Command Prompt".into(),
-            program: system.join("cmd.exe"),
-            args: vec![],
-            bundled: false,
             env: config.env.clone(),
         });
     }
@@ -131,6 +50,46 @@ pub fn discover(config: &Config) -> Vec<ShellProfile> {
         });
     }
     profiles
+}
+
+fn find_bash(config: &Config) -> Option<(PathBuf, bool)> {
+    let executable_dir = std::env::current_exe()
+        .ok()
+        .and_then(|p| p.parent().map(Path::to_path_buf));
+    let mut candidates = Vec::new();
+    if let Some(path) = &config.bash_path {
+        candidates.push((path.clone(), false));
+    }
+    if let Some(path) = std::env::var_os("WINSHELL_BASH") {
+        candidates.push((path.into(), false));
+    }
+    #[cfg(unix)]
+    for path in ["/opt/homebrew/bin/bash", "/usr/local/bin/bash", "/bin/bash"] {
+        candidates.push((PathBuf::from(path), false));
+    }
+    if let Some(dir) = &executable_dir {
+        candidates.push((dir.join("runtime/git/bin/bash.exe"), true));
+        if let Some(root) = dir.parent().and_then(Path::parent) {
+            candidates.push((root.join("runtime/git/bin/bash.exe"), true));
+        }
+    }
+    for variable in [
+        "ProgramW6432",
+        "ProgramFiles",
+        "ProgramFiles(x86)",
+        "LOCALAPPDATA",
+    ] {
+        if let Some(dir) = std::env::var_os(variable) {
+            candidates.push((PathBuf::from(&dir).join("Git/bin/bash.exe"), false));
+            candidates.push((PathBuf::from(dir).join("Programs/Git/bin/bash.exe"), false));
+        }
+    }
+    if let Some(path) =
+        find_on_path("git.exe").and_then(|p| p.parent()?.parent().map(|p| p.join("bin/bash.exe")))
+    {
+        candidates.push((path, false));
+    }
+    candidates.into_iter().find(|(path, _)| path.is_file())
 }
 
 fn find_on_path(name: &str) -> Option<PathBuf> {
@@ -171,8 +130,6 @@ impl ShellProfile {
         command.env("COLORTERM", "truecolor");
         command.env("TERM_PROGRAM", "winshell");
         command.env("TERM_PROGRAM_VERSION", env!("CARGO_PKG_VERSION"));
-        // CommandBuilder inherits this process's complete environment. Overrides
-        // apply only to the child; they never mutate the machine or other tabs.
         for (name, value) in &self.env {
             anyhow::ensure!(
                 !name.is_empty() && !name.contains(['=', '\0']) && !value.contains('\0'),

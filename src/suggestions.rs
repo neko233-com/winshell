@@ -63,6 +63,11 @@ impl Suggestions {
             .collect();
     }
 
+    pub fn recent(&self, limit: usize) -> &[String] {
+        let start = self.history.len().saturating_sub(limit);
+        &self.history[start..]
+    }
+
     pub fn matching(&self, query: &str) -> Vec<Suggestion> {
         if query.is_empty() || query.starts_with(' ') || query.chars().any(char::is_control) {
             return vec![];

@@ -113,6 +113,8 @@ impl TerminalView {
     fn terminal_font(&self) -> Font {
         let mut result = font(self.font_family.clone());
         result.fallbacks = Some(FontFallbacks::from_fonts(vec![
+            "JetBrains Mono".into(),
+            "Cascadia Mono".into(),
             "Consolas".into(),
             "Microsoft YaHei UI".into(),
             "Microsoft JhengHei UI".into(),
@@ -122,6 +124,24 @@ impl TerminalView {
             "Segoe UI Symbol".into(),
         ]));
         result
+    }
+
+    pub fn history_entries(&self, limit: usize) -> Vec<String> {
+        self.history.recent(limit).to_vec()
+    }
+
+    pub fn paste_command_for_inspector(&mut self, text: &str) {
+        let bracketed = self
+            .session
+            .state
+            .lock()
+            .unwrap()
+            .term
+            .mode()
+            .contains(TermMode::BRACKETED_PASTE);
+        self.send(input::paste(text, bracketed));
+        self.cursor_visible = true;
+        self.last_blink = Instant::now();
     }
 
     fn focus_report(&mut self, focused: bool) {

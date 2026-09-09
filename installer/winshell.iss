@@ -1,5 +1,5 @@
 #ifndef AppVersion
-  #define AppVersion "0.2.0"
+  #define AppVersion "0.2.1"
 #endif
 #ifndef PackageDir
   #error PackageDir must point to the prepared portable directory
@@ -57,6 +57,12 @@ Name: "{autodesktop}\WinShell"; Filename: "{app}\winshell.exe"; WorkingDir: "{%U
 
 [Registry]
 Root: HKCU; Subkey: "Software\Microsoft\Windows\CurrentVersion\App Paths\winshell.exe"; ValueType: string; ValueData: "{app}\winshell.exe"; Flags: uninsdeletekey
+Root: HKCU; Subkey: "Software\Classes\Directory\shell\WinShell"; ValueType: string; ValueData: "Open with WinShell"; Flags: uninsdeletekey
+Root: HKCU; Subkey: "Software\Classes\Directory\shell\WinShell"; ValueType: string; ValueName: "Icon"; ValueData: "{app}\winshell.exe"
+Root: HKCU; Subkey: "Software\Classes\Directory\shell\WinShell\command"; ValueType: string; ValueData: """{app}\winshell.exe"" ""--cwd=%1"""
+Root: HKCU; Subkey: "Software\Classes\Directory\Background\shell\WinShell"; ValueType: string; ValueData: "Open with WinShell"; Flags: uninsdeletekey
+Root: HKCU; Subkey: "Software\Classes\Directory\Background\shell\WinShell"; ValueType: string; ValueName: "Icon"; ValueData: "{app}\winshell.exe"
+Root: HKCU; Subkey: "Software\Classes\Directory\Background\shell\WinShell\command"; ValueType: string; ValueData: """{app}\winshell.exe"" ""--cwd=%V"""
 
 [Run]
 Filename: "{app}\winshell.exe"; WorkingDir: "{%USERPROFILE}"; Description: "{cm:LaunchProgram,WinShell}"; Flags: nowait postinstall skipifsilent

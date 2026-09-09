@@ -21,6 +21,16 @@ fn main() {
     if !args.is_empty() {
         attach_parent_console();
     }
+    match run(args) {
+        Ok(()) => {}
+        Err(error) => {
+            eprintln!("{error:#}");
+            std::process::exit(1);
+        }
+    }
+}
+
+fn run(args: Vec<String>) -> anyhow::Result<()> {
     let (config, error) = match winshell::config::Config::load() {
         Ok(config) => (config, None),
         Err(error) => (
@@ -28,52 +38,77 @@ fn main() {
             Some(format!("{error:#}")),
         ),
     };
-    if !args.is_empty() && args[0] != "--cwd" && args[0] != "--shell" {
-        if let Some(error) = &error {
-            eprintln!("{error}");
-            std::process::exit(1);
-        }
-        if let Err(error) = cli(&args, &config) {
-            eprintln!("{error:#}");
-            std::process::exit(1);
-        }
-        return;
-    }
     let mut config = config;
-    for pair in args.chunks(2) {
-        let result = (|| -> anyhow::Result<()> {
-            let value = pair
-                .get(1)
-                .ok_or_else(|| anyhow::anyhow!("{} requires a value", pair[0]))?;
-            match pair[0].as_str() {
-                "--cwd" => {
-                    let path = std::path::PathBuf::from(value);
-                    anyhow::ensure!(
-                        path.is_dir(),
-                        "Directory does not exist: {}",
-                        path.display()
-                    );
-                    config.working_directory = Some(path);
-                }
-                "--shell" => {
-                    anyhow::ensure!(
-                        winshell::shell::discover(&config)
-                            .iter()
-                            .any(|profile| profile.id == *value),
-                        "Shell profile not found: {value}"
-                    );
-                    config.default_shell = value.clone();
-                }
-                other => anyhow::bail!("Unknown argument: {other}"),
-            }
-            Ok(())
-        })();
-        if let Err(error) = result {
-            eprintln!("{error:#}");
-            std::process::exit(1);
+    let mut rest: Vec<String> = Vec::new();
+    let mut i = 0usize;
+    while i < args.len() {
+        let arg = args[i].clone();
+        if let Some(value) = arg.strip_prefix("--cwd=") {
+            let path = std::path::PathBuf::from(value);
+            anyhow::ensure!(path.is_dir(), "Directory does not exist: {}", path.display());
+            config.working_directory = Some(path);
+            i += 1;
+            continue;
         }
+        if let Some(value) = arg.strip_prefix("--shell=") {
+            anyhow::ensure!(
+                winshell::shell::discover(&config)
+                    .iter()
+                    .any(|profile| profile.id == *value),
+                "Shell profile not found: {value}"
+            );
+            config.default_shell = value.to_string();
+            i += 1;
+            continue;
+        }
+        match arg.as_str() {
+            "--cwd" => {
+                let value = args
+                    .get(i + 1)
+                    .ok_or_else(|| anyhow::anyhow!("--cwd requires a value"))?;
+                let path = std::path::PathBuf::from(value);
+                anyhow::ensure!(path.is_dir(), "Directory does not exist: {}", path.display());
+                config.working_directory = Some(path);
+                i += 2;
+            }
+            "--shell" => {
+                let value = args
+                    .get(i + 1)
+                    .ok_or_else(|| anyhow::anyhow!("--shell requires a value"))?
+                    .clone();
+                anyhow::ensure!(
+                    winshell::shell::discover(&config)
+                        .iter()
+                        .any(|profile| profile.id == value),
+                    "Shell profile not found: {value}"
+                );
+                config.default_shell = value;
+                i += 2;
+            }
+            other if other.starts_with('-') => {
+                rest.push(other.to_string());
+                i += 1;
+            }
+            other => {
+                let path = std::path::PathBuf::from(other);
+                if path.is_dir() {
+                    config.working_directory = Some(path);
+                } else {
+                    rest.push(other.to_string());
+                }
+                i += 1;
+            }
+        }
+    }
+    if !rest.is_empty() {
+        if let Some(error) = &error {
+            anyhow::bail!("{error}");
+        }
+        cli(&rest, &config)?;
+        return Ok(());
     }
     app::run(config, error, None);
+    Ok(())
 }
 
 #[cfg(windows)]
@@ -95,7 +130,7 @@ fn cli(args: &[String], config: &winshell::config::Config) -> anyhow::Result<()>
     match args[0].as_str() {
         "--version" | "-V" => println!("winshell {}", env!("CARGO_PKG_VERSION")),
         "--help" | "-h" => println!(
-            "WinShell — a native multi-tab Windows terminal\n\n  winshell                 Open the desktop application\n  winshell --doctor        Check available shells and configuration\n  winshell --smoke-test ID  Test a real PTY session (bash, powershell, cmd)\n  winshell --version       Print the version\n\nConfiguration: {}",
+            "WinShell — a native multi-tab Windows terminal\n\n  winshell                 Open the desktop application\n  winshell --cwd DIR       Open in a directory\n  winshell --doctor        Check available shells and configuration\n  winshell --smoke-test ID  Test a real PTY session (bash, powershell, cmd)\n  winshell --version       Print the version\n\nConfiguration: {}",
             winshell::config::directory().join("config.toml").display()
         ),
         "--doctor" => {
@@ -137,6 +172,8 @@ fn cli(args: &[String], config: &winshell::config::Config) -> anyhow::Result<()>
             winshell::config::set_directory(scratch.join("settings"))?;
             let mut config = winshell::config::Config {
                 working_directory: Some(scratch.clone()),
+                // Acceptance script is Bash-specific; keep the desktop default free.
+                default_shell: "bash".into(),
                 ..Default::default()
             };
             config
